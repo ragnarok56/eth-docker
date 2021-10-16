@@ -1,3 +1,4 @@
+# Version without timezone, for use with Amazon Linux 2 and similar
 version: "3.4"
 x-logging: &logging
   logging:
@@ -7,13 +8,55 @@ x-logging: &logging
       max-file: "3"
 
 services:
+  consensus:
+    restart: "${RESTART}"
+    build:
+      context: ./lighthouse
+      dockerfile: ${LH_DOCKERFILE}
+      args:
+        - BUILD_TARGET=${LH_SRC_BUILD_TARGET}
+        - DOCKER_TAG=${LH_DOCKER_TAG}
+    image: lighthouse:local
+    stop_grace_period: 1m
+    volumes:
+      - lhbeacon-data:/var/lib/lighthouse
+    ports:
+      - ${LH_PORT}:${LH_PORT}/tcp
+      - ${LH_PORT}:${LH_PORT}/udp
+    expose:
+      - 5052/tcp
+    networks:
+      default:
+        aliases:
+          - eth2
+    <<: *logging
+    entrypoint:
+      - docker-entrypoint.sh
+      - lighthouse
+      - bn
+      - --disable-upnp
+      - --datadir
+      - /var/lib/lighthouse
+      - --http
+      - --http-address
+      - 0.0.0.0
+      - --network
+      - ${NETWORK}
+      - --port
+      - ${LH_PORT}
+      - --target-peers
+      - ${LH_PEER_COUNT}
+      - --eth1-endpoints
+      - ${EC_NODE}
+      - --eth1-blocks-per-log-query
+      - "150"
+      - --debug-level=${LOG_LEVEL}
+    command: ${LH_RAPID_SYNC}
   validator:
     restart: "${RESTART}"
     image: lighthouse:local
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
-      - /etc/timezone:/etc/timezone:ro
-      - /etc/localtime:/etc/localtime:ro
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -23,20 +66,20 @@ services:
       - /var/lib/lighthouse
       - --beacon-nodes
       - ${CC_NODE}
-#      - --enable-doppelganger-protection
+      - --enable-doppelganger-protection
       - --graffiti
       - ${GRAFFITI}
       - --network
       - ${NETWORK}
       - --debug-level=${LOG_LEVEL}
+    depends_on:
+      - consensus
   validator-import:
     restart: "no"
     image: lighthouse:local
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - ${DEPCLI_LOCALDIR}/validator_keys:/validator_keys
-      - /etc/timezone:/etc/timezone:ro
-      - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - validator-import.sh
       - lighthouse
@@ -56,8 +99,6 @@ services:
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - ${DEPCLI_LOCALDIR}/validator_keys:/validator_keys
-      - /etc/timezone:/etc/timezone:ro
-      - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - validator-exit.sh
       - lighthouse
@@ -65,13 +106,15 @@ services:
       - validator
       - exit
       - --beacon-node
-      - ${CC_NODE}
+      - http://consensus:5052
       - --datadir
       - /var/lib/lighthouse
       - --network
       - ${NETWORK}
       - --debug-level=${LOG_LEVEL}
       - --keystore
+    depends_on:
+      - consensus
   validator-account:
     restart: "no"
     image: lighthouse:local
@@ -79,8 +122,6 @@ services:
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - ${DEPCLI_LOCALDIR}:/interchange
-      - /etc/timezone:/etc/timezone:ro
-      - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - lighthouse
       - account
@@ -94,6 +135,8 @@ services:
     image: tianon/true
     restart: "no"
     depends_on:
+      - consensus
       - validator
 volumes:
+  lhbeacon-data:
   lhvalidator-data:

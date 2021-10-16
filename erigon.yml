@@ -1,4 +1,11 @@
 version: "3.4"
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
 services:
   erigon:
     restart: "${RESTART}"
@@ -20,6 +27,11 @@ services:
       - ${EC_P2P_PORT}:${EC_P2P_PORT}/udp
     expose:
       - 9090/tcp
+    networks:
+      default:
+        aliases:
+          - eth1
+    <<: *logging
     entrypoint:
       - docker-entrypoint.sh
       - erigon

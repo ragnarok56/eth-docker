@@ -1,4 +1,11 @@
 version: "3.4"
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
 services:
   execution:
     restart: "${RESTART}"
@@ -24,6 +31,7 @@ services:
       default:
         aliases:
           - eth1
+    <<: *logging
     entrypoint:
       - docker-entrypoint.sh
       - /opt/besu/bin/besu
@@ -51,8 +59,8 @@ services:
       - --network
       - ${EC_NETWORK}
       - --pruning-enabled
-# This is going to be the new hawtness but should only be used for testing right now,
-# it is not stable on mainnet. When using this, disable --pruning-enabled.
+# This is going to be the new hawtness but should only be used for testing right now.
+# When using this, disable --pruning-enabled.
 #     - --Xdata-storage-format=BONSAI
   eth:
     depends_on:

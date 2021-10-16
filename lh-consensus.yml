@@ -1,4 +1,11 @@
 version: "3.4"
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
 services:
   consensus:
     restart: "${RESTART}"
@@ -20,6 +27,11 @@ services:
       - ${LH_PORT}:${LH_PORT}/udp
     expose:
       - 5052/tcp
+    networks:
+      default:
+        aliases:
+          - eth2
+    <<: *logging
     entrypoint:
       - docker-entrypoint.sh
       - lighthouse
@@ -41,6 +53,7 @@ services:
       - --eth1-blocks-per-log-query
       - "150"
       - --debug-level=${LOG_LEVEL}
+    command: ${LH_RAPID_SYNC}
     labels:
       - traefik.enable=true
       - traefik.http.routers.cc.entrypoints=websecure
