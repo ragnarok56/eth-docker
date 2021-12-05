@@ -17,6 +17,9 @@ services:
         - BUILD_TARGET=${BESU_SRC_BUILD_TARGET}
         - DOCKER_TAG=${BESU_DOCKER_TAG}
     image: besu:local
+    user: besu
+    environment:
+      - JAVA_OPTS=-Xmx4g
     volumes:
       - besu-eth1-data:/var/lib/besu
       - /etc/timezone:/etc/timezone:ro
@@ -33,7 +36,6 @@ services:
           - eth1
     <<: *logging
     entrypoint:
-      - docker-entrypoint.sh
       - /opt/besu/bin/besu
       - --data-path
       - /var/lib/besu
@@ -41,14 +43,15 @@ services:
       - ${EC_P2P_PORT}
       - --rpc-http-enabled
       - --rpc-http-api
-      - "web3,eth,net"
+      - "WEB3,ETH,NET"
       - --rpc-http-host
       - 0.0.0.0
       - --rpc-http-port
       - ${EC_RPC_PORT}
+      - --rpc-http-cors-origins=*
       - --rpc-ws-enabled
       - --rpc-ws-api
-      - "web3,eth,net"
+      - "WEB3,ETH,NET"
       - --rpc-ws-host
       - 0.0.0.0
       - --rpc-ws-port
@@ -58,10 +61,7 @@ services:
       - ${LOG_LEVEL}
       - --network
       - ${EC_NETWORK}
-      - --pruning-enabled
-# This is going to be the new hawtness but should only be used for testing right now.
-# When using this, disable --pruning-enabled.
-#     - --Xdata-storage-format=BONSAI
+      - --Xdata-storage-format=BONSAI
   eth:
     depends_on:
       - execution

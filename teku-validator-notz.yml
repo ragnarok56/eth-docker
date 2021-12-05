@@ -17,23 +17,24 @@ services:
         - DOCKER_TAG=${TEKU_DOCKER_TAG}
       dockerfile: ${TEKU_DOCKERFILE}
     image: teku:local
+    user: teku
     volumes:
       - teku-data:/var/lib/teku
     <<: *logging
     entrypoint:
-      - docker-entrypoint.sh
       - /opt/teku/bin/teku
       - validator-client
       - --beacon-node-api-endpoint=${CC_NODE}
       - --data-path=/var/lib/teku
       - --log-destination=CONSOLE
-      - --network=${NETWORK}
+      - --network=auto
       - --validators-keystore-locking-enabled=true
       - --validator-keys=/var/lib/teku/validator-keys:/var/lib/teku/validator-passwords
       - --validators-graffiti=${GRAFFITI}
   validator-import:
     restart: "no"
     image: teku:local
+    user: root
     volumes:
       - teku-data:/var/lib/teku
       - ${DEPCLI_LOCALDIR}/validator_keys:/validator_keys

@@ -2,9 +2,8 @@ ARG DOCKER_TAG
 
 FROM statusim/nimbus-eth2:${DOCKER_TAG}
 
-# Unused, the next three are here to avoid build time complaints
+# Included here to avoid build-time complaints
 ARG BUILD_TARGET
-ARG METRICS
 
 ARG UID=10002
 
@@ -25,7 +24,8 @@ RUN mkdir -p /var/lib/nimbus && chown -R user:user /var/lib/nimbus && chmod 700 
 # Copy beacon_node into $PATH
 RUN cp /home/user/nimbus-eth2/build/nimbus_beacon_node /usr/local/bin/nimbus_beacon_node
 # Scripts for privilege change and validator import
-COPY ./docker-entrypoint.sh /usr/local/bin/
 COPY ./validator-import.sh /usr/local/bin/
 
-ENTRYPOINT ["docker-entrypoint.sh","nimbus_beacon_node"]
+USER user
+
+ENTRYPOINT ["nimbus_beacon_node"]
