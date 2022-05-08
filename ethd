@@ -58,7 +58,16 @@ update() {
 # BASH_SOURCE so newer code gets to do the migration, env so I have a way to
 # communicate with it
     export KEEPTARGETS=$__keeptargets
+    if git branch --show-current | grep -q rpc-nodes; then
+        __rpc_branch=1
+    else
+        __rpc_branch=0
+    fi
     "${BASH_SOURCE}" envmigrate
+    git branch --show-current | grep -q rpc-nodes
+    if [ "${__rpc_branch}" = 0 -a $? = 0 ]; then
+        "${BASH_SOURCE}" envmigrate # default.env will have changed so let's do it again
+    fi
     unset KEEPTARGETS
     cmd build --pull
     exec 3>&1
@@ -85,7 +94,7 @@ been migrated, please recreate these changes yourself."
     else
         echo "No changes made to ${ENV_FILE} during migration"
     fi
-    if [[ "$__distro" = "ubuntu" && -n $(which snap) && -n $(snap list | grep -w "docker") ]]; then
+    if [[ "$__distro" = "ubuntu" && -n $(which snap) && -n $(snap list 2>/dev/null | grep -w "docker") ]]; then
 	echo
 	echo "WARNING! Snap docker package detected. This WILL result in issues."
 	echo "Removing the package will delete volumes and require a resync,"
@@ -93,7 +102,7 @@ been migrated, please recreate these changes yourself."
 	echo
 	echo "Doing so is still highly recommended however."
 	echo
-        echo "The exact steps depend a little on whether there already is"
+    echo "The exact steps depend a little on whether there already is"
 	echo "an apt version of docker installed as well, but in a nutshell"
 	echo '"./ethd stop" followed by "sudo snap remove --purge docker"'
 	echo "and then reinstall docker.io or docker-ce with apt,"
@@ -103,40 +112,7 @@ been migrated, please recreate these changes yourself."
     fi
 }
 
-rocketeer() {
-    if ! command -v yq &> /dev/null; then
-        if ! $(grep -q "ID_LIKE=debian" /etc/os-release); then
-            echo "yq not installed and I don't know how to install it on non-Debian system"
-            exit
-        fi
-        if [ ${EUID} -ne 0 ]; then
-            echo "Elevating to root privileges"
-            exec sudo ${BASH_SOURCE} rocketeer
-        fi
-        echo "Installing yq"
-        add-apt-repository -y ppa:rmescandon/yq
-        apt-get -y install yq
-        if [ $? -ne 0 ]; then
-            echo "Installation of yq failed, exiting"
-            exit 1
-        fi
-        echo "Dropping root privileges"
-        exec sudo -u ${OWNER} ${BASH_SOURCE} rocketeer
-    fi
-    echo "Making changes to original Rocketpool file"
-    FILE=~/.rocketpool/docker-compose.yml
-    cp "${FILE}" "${FILE}.bak"
-    yq eval 'del(.services.eth1)' -i "${FILE}"
-    yq eval 'del(.services.eth2)' -i "${FILE}"
-    yq eval 'del(.. | select(has("depends_on")).depends_on)' -i "${FILE}"
-    yq eval 'del(.volumes)' -i "${FILE}"
-    echo ""
-    echo "eth1 and eth2 services have been removed from ${FILE}"
-    echo "A copy of the original is in ${FILE}.bak"
-}
-
 prune-geth() {
-
     __non_interactive=0
     while :
     do
@@ -364,13 +340,13 @@ envmigrate() {
     if [ ! -f "./${ENV_FILE}" ]; then
         return
     fi
-    ALL_VARS=( COMPOSE_FILE EC_NODE EC_FALLBACK_NODE1 EC_FALLBACK_NODE2 GRAFFITI NETWORK EC_NETWORK \
+    ALL_VARS=( COMPOSE_FILE EL_NODE EL_FALLBACK_NODE1 EL_FALLBACK_NODE2 GRAFFITI NETWORK EL_NETWORK \
             PRYSM_PEER_COUNT LH_PEER_COUNT TEKU_PEER_COUNT NIM_PEER_COUNT DOMAIN ACME_EMAIL \
-            CF_EMAIL CF_API_TOKEN AWS_PROFILE AWS_HOSTED_ZONE_ID GRAFANA_HOST PRYSM_HOST \
-            EC_HOST EC_WS_HOST CC_HOST DDNS_SUBDOMAIN DDNS_PROXY TEKU_RAPID_SYNC LH_RAPID_SYNC LS_RAPID_SYNC  \
-            NIMBUS_RAPID_SYNC CC_NODE BEACON_STATS_API BEACON_STATS_MACHINE EC_P2P_PORT CC_P2P_PORT PRYSM_PORT  \
+            CF_EMAIL CF_API_TOKEN AWS_PROFILE AWS_HOSTED_ZONE_ID GRAFANA_HOST PROM_HOST PRYSM_HOST \
+            EL_HOST EL_WS_HOST DDNS_SUBDOMAIN DDNS_PROXY RAPID_SYNC_URL \
+            CL_NODE BEACON_STATS_API BEACON_STATS_MACHINE EL_P2P_PORT CL_P2P_PORT PRYSM_PORT  \
             PRYSM_UDP_PORT GRAFANA_PORT KEY_API_PORT TRAEFIK_WEB_PORT TRAEFIK_WEB_HTTP_PORT \
-            EC_RPC_PORT EC_WS_PORT RESTART LOG_LEVEL GETH_CACHE SSV_P2P_PORT SSV_P2P_PORT_UDP )
+            EL_RPC_PORT EL_WS_PORT RESTART LOG_LEVEL GETH_CACHE SSV_P2P_PORT SSV_P2P_PORT_UDP )
     TARGET_VARS=( NIM_SRC_BUILD_TARGET NIM_DOCKER_TAG NIM_DOCKERFILE TEKU_SRC_BUILD_TARGET TEKU_DOCKER_TAG \
                 TEKU_DOCKERFILE LH_SRC_BUILD_TARGET LH_DOCKER_TAG LH_DOCKERFILE PRYSM_SRC_BUILD_TARGET \
                 PRYSM_DOCKER_TAG PRYSM_DOCKERFILE ERIGON_SRC_BUILD_TARGET ERIGON_DOCKER_TAG ERIGON_DOCKERFILE \
@@ -378,8 +354,10 @@ envmigrate() {
                 GETH_DOCKERFILE NM_SRC_BUILD_TARGET NM_DOCKER_TAG NM_DOCKERFILE BESU_SRC_BUILD_TARGET \
                 BESU_DOCKER_TAG BESU_DOCKERFILE SSV_NODE_TAG DEPCLI_SRC_BUILD_TARGET DEPCLI_DOCKER_TAG DEPCLI_LOCALDIR \
                 NODE_EXPORTER_IGNORE_MOUNT_REGEX )
-    OLD_VARS=( LH_PORT PRYSM_WEB_PORT )
-    NEW_VARS=( CC_P2P_PORT KEY_API_PORT )
+    OLD_VARS=( LH_PORT PRYSM_WEB_PORT EC_NODE EC_FALLBACK_NODE1 EC_FALLBACK_NODE2 EC_NETWORK \
+	   EC_HOST EC_WS_HOST EC_P2P_PORT CC_P2P_PORT EC_RPC_PORT EC_WS_PORT )
+    NEW_VARS=( CC_P2P_PORT KEY_API_PORT EL_NODE EL_FALLBACK_NODE1 EL_FALLBACK_NODE2 EL_NETWORK \
+	   EL_HOST EL_WS_HOST EL_P2P_PORT CL_P2P_PORT EL_RPC_PORT EL_WS_PORT )
 
     # I had a "${BASH_SOURCE} envmigrate $@" so that new code would do the migration,
     # then dropped that way of doing things with the parameter and used an ENV
@@ -411,7 +389,10 @@ envmigrate() {
     # Migrate over user settings
     for var in "${ALL_VARS[@]}"; do
         value=$(grep --color=never -Po "^${var}=\K.*" ".env.source" || true)
-        if [ -n "${value}" -o ${var} = "GRAFFITI" ]; then
+        if [ -n "${value}" -o "${var}" = "GRAFFITI" ]; then
+            if [ "${var}" = "COMPOSE_FILE" ]; then
+                migrate_compose_file
+            fi
             sed -i'.original' -e "s~^\(${var}\s*=\s*\).*$~\1${value}~" "${ENV_FILE}"
         fi
     done
@@ -435,12 +416,72 @@ envmigrate() {
     rm .env.source
 }
 
+migrate_compose_file() {
+# Some files have been renamed and others removed altogether
+    FROM_YML=( ec-shared.yml ec-traefik.yml cc-shared.yml grafana-insecure.yml prysm-web-insecure.yml lh-base-notz.yml lh-validator-notz.yml teku-base-notz.yml teku-validator-notz.yml prysm-web.yml blank-grafana.yml lh-grafana.yml lhcc-grafana.yml nimbus-grafana.yml prysm-grafana.yml teku-grafana.yml geth-grafana.yml erigon-grafana.yml )
+    TO_YML=( el-shared.yml el-traefik.yml cl-shared.yml grafana-shared.yml prysm-web-shared.yml lh-base.yml lh-validator.yml teku-base.yml teku-validator.yml "" "" "" "" "" "" "" "" "" )
+# These files were removed from main branch and are only present in rpc-nodes now
+    ADV_YML=( lh-consensus.yml lh-stats-consensus.yml lh-stats-validator.yml lodestar-consensus.yml lodestar-validator.yml nimbus-consensus.yml prysm-consensus.yml prysm-validator.yml teku-consensus.yml traefik-shared.yml )
+
+    __old_grafana=0
+    __new_grafana=0
+    __grafana_regex=".+-grafana\.yml"
+    if git branch --show-current | grep -q rpc-nodes; then
+        __rpc_branch=1
+    else
+        __rpc_branch=0
+    fi
+    __switched_branch=0
+    IFS=":"
+    set -o noglob
+    __ymlarray=($value) # split+glob with glob disabled, and split using : as delimiter
+    set +o noglob
+
+    value=""
+    for n in "${!__ymlarray[@]}"; do
+        __ymlfile="${__ymlarray[n]}"
+        if [[ "${__ymlfile}" =~ $__grafana_regex ]]; then
+            __old_grafana=1
+        fi
+        if [ "${__ymlfile}" = "grafana.yml" ]; then
+            __new_grafana=1
+        fi
+        for index in "${!FROM_YML[@]}"; do
+            if [ "${FROM_YML[index]}" = "${__ymlfile}" ]; then
+                __ymlfile=${TO_YML[index]}
+                break
+            fi
+        done
+        for index in "${!ADV_YML[@]}"; do
+            if [ "${__rpc_branch}" = 0 -a "${ADV_YML[index]}" = "${__ymlfile}" -a "${__switched_branch}" = 0 ]; then
+                __switched_branch=1
+                echo "Breaking change: Consensus and validator yml files are now only in rpc-nodes branch."
+                echo "Switching you over to that branch automatically."
+                git fetch origin rpc-nodes
+                git checkout rpc-nodes
+                break
+            fi
+        done
+        if [ -n "${__ymlfile}" ]; then
+            if [ -z "${value}" ]; then
+                value="${__ymlfile}"
+            else
+                value="${value}:${__ymlfile}"
+            fi
+        fi
+    done
+    if [ "${__new_grafana}" = 0 -a "${__old_grafana}" = 1 ]; then
+        value="${value}:grafana.yml"
+    fi
+}
+
 query_network() {
     # Mainnet or Testnet network
     NETWORK=$(whiptail --notags --title "Select Network" --menu \
-    "Which network do you want to run on?" 9 60 2 \
+    "Which network do you want to run on?" 9 60 3 \
     "prater" "Prater Testnet" \
-    "mainnet" "Ethereum Mainnet" 3>&1 1>&2 2>&3)
+    "mainnet" "Ethereum Mainnet" \
+    "gnosis" "Gnosis Beacon Chain" 3>&1 1>&2 2>&3)
 
     if [ "${NETWORK}" == "mainnet" ]; then
         EC_NETWORK=mainnet
@@ -448,6 +489,9 @@ query_network() {
     elif [ "${NETWORK}" == "prater" ]; then
         EC_NETWORK=goerli
         echo "You chose to run on Prater testnet"
+    elif [ "${NETWORK}" == "gnosis" ]; then
+        EC_NETWORK=xdai
+        echo "You chose to run on Gnosis Beacon Chain"
     else
         echo "You chose Cancel."
         exit 0
@@ -455,21 +499,19 @@ query_network() {
 }
 
 query_deployment() {
-    if uname -a | grep -q aarch64; then
+    if [ ${NETWORK} = "gnosis" ]; then
+      __deployment="node"
+    elif uname -a | grep -q aarch64; then
       __deployment=$(whiptail --notags --title "Select deployment type" --menu \
       "What kind of deployment do you want to run?" 11 80 4 \
       "node" "Ethereum node - consensus, execution and validator client" \
-      "rocket" "Validator client only - integrate with RocketPool" \
-      "validator" "Validator client only - integrate with other consensus layer" \
-      "rpc" "Ethereum RPC node - consensus and execution client" 3>&1 1>&2 2>&3)
+      "rocket" "Validator client only - integrate with RocketPool"  3>&1 1>&2 2>&3)
     else
       __deployment=$(whiptail --notags --title "Select deployment type" --menu \
       "What kind of deployment do you want to run?" 12 80 5 \
       "node" "Ethereum node - consensus, execution and validator client" \
       "rocket" "Validator client only - integrate with RocketPool" \
-      "validator" "Validator client only - integrate with other consensus layer" \
-      "blox" "Blox SSV node - consensus, execution and ssv-node" \
-      "rpc" "Ethereum RPC node - consensus and execution client" 3>&1 1>&2 2>&3)
+      "blox" "Blox SSV node - consensus, execution and ssv-node" 3>&1 1>&2 2>&3)
     fi
 
     exitstatus=$?
@@ -482,7 +524,24 @@ query_deployment() {
 }
 
 query_validator_client() {
-    if uname -a | grep -q aarch64; then
+    if [ ${NETWORK} = "gnosis" ]; then
+      CONSENSUS_CLIENT=$(whiptail --notags --title "Select validator client" --menu \
+      "Which validator client do you want to run?" 9 65 2 \
+      "lh-validator.yml" "Lighthouse validator client" \
+      "teku-validator.yml" "Teku validator client" 3>&1 1>&2 2>&3)
+    elif [ "${__deployment}" = "rocket" ]; then
+        if uname -a | grep -q aarch64; then
+          CONSENSUS_CLIENT=$(whiptail --notags --title "Select validator client" --menu \
+          "Which validator client do you want to run?" 9 65 2 \
+          "lh-validator.yml" "Lighthouse validator client" \
+          "teku-validator.yml" "Teku validator client" 3>&1 1>&2 2>&3)
+        else
+          CONSENSUS_CLIENT=$(whiptail --notags --title "Select validator client" --menu \
+          "Which validator client do you want to run?" 9 65 2 \
+          "teku-validator.yml" "Teku validator client" \
+          "lh-validator.yml" "Lighthouse validator client" 3>&1 1>&2 2>&3)
+        fi
+    elif uname -a | grep -q aarch64; then
       CONSENSUS_CLIENT=$(whiptail --notags --title "Select validator client" --menu \
       "Which validator client do you want to run?" 9 65 2 \
       "lh-validator.yml" "Lighthouse validator client" \
@@ -505,30 +564,13 @@ query_validator_client() {
     fi
 }
 
-query_validator_client_rocket() {
-    if uname -a | grep -q aarch64; then
-      CONSENSUS_CLIENT=$(whiptail --notags --title "Select validator client" --menu \
-      "Which validator client do you want to run?" 9 65 2 \
-      "lh-validator.yml" "Lighthouse validator client" \
-      "teku-validator.yml" "Teku validator client" 3>&1 1>&2 2>&3)
-    else
-      CONSENSUS_CLIENT=$(whiptail --notags --title "Select validator client" --menu \
-      "Which validator client do you want to run?" 9 65 2 \
-      "teku-validator.yml" "Teku validator client" \
-      "lh-validator.yml" "Lighthouse validator client" 3>&1 1>&2 2>&3)
-    fi
-
-    exitstatus=$?
-    if [ $exitstatus -eq 0 ]; then
-        echo "Your validator client file is:" "${CONSENSUS_CLIENT}"
-    else
-        echo "You chose Cancel."
-        exit 0
-    fi
-}
-
 query_consensus_client() {
-    if uname -a | grep -q aarch64; then
+    if [ ${NETWORK} = "gnosis" ]; then
+      CONSENSUS_CLIENT=$(whiptail --notags --title "Select consensus client" --menu \
+      "Which consensus client do you want to run?" 10 65 3 \
+      "lh-base.yml" "Lighthouse (Rust) - consensus and validator client" \
+      "teku-base.yml" "Teku (Java) - consensus and validator client" 3>&1 1>&2 2>&3)
+    elif uname -a | grep -q aarch64; then
       CONSENSUS_CLIENT=$(whiptail --notags --title "Select consensus client" --menu \
       "Which consensus client do you want to run?" 10 65 3 \
       "lh-base.yml" "Lighthouse (Rust) - consensus and validator client" \
@@ -554,7 +596,12 @@ query_consensus_client() {
 }
 
 query_consensus_only_client() {
-    if uname -a | grep -q aarch64; then
+    if [ ${NETWORK} = "gnosis" ]; then
+      CONSENSUS_CLIENT=$(whiptail --notags --title "Select consensus client" --menu \
+      "Which consensus client do you want to run?" 10 65 3 \
+      "lh-consensus.yml" "Lighthouse (Rust) - consensus client" \
+      "teku-consensus.yml" "Teku (Java) - consensus client" 3>&1 1>&2 2>&3)
+    elif uname -a | grep -q aarch64; then
       CONSENSUS_CLIENT=$(whiptail --notags --title "Select consensus client" --menu \
       "Which consensus client do you want to run?" 10 65 3 \
       "lh-consensus.yml" "Lighthouse (Rust) - consensus client" \
@@ -592,8 +639,11 @@ query_custom_execution_client() {
 }
 
 query_fallback_execution_client() {
-        EC_FALLBACK_NODE1=$(whiptail --title "Configure fallback execution client" --inputbox "What is the URL for your fallback execution client? (right-click to paste)" 10 60 "https://${EC_NETWORK}.infura.io/v3/..." 3>&1 1>&2 2>&3)
-
+	if [ "${CONSENSUS_CLIENT}" == "nimbus-base.yml" -o "${CONSENSUS_CLIENT}" == "nimbus-consensus.yml" ]; then
+	    EC_FALLBACK_NODE1=$(whiptail --title "Configure fallback execution client" --inputbox "What is the URL for your fallback execution client? (right-click to paste)" 10 60 "wss://${EC_NETWORK}.infura.io/v3/..." 3>&1 1>&2 2>&3)
+        else
+	    EC_FALLBACK_NODE1=$(whiptail --title "Configure fallback execution client" --inputbox "What is the URL for your fallback execution client? (right-click to paste)" 10 60 "https://${EC_NETWORK}.infura.io/v3/..." 3>&1 1>&2 2>&3)
+        fi
         exitstatus=$?
         if [ $exitstatus -eq 0 ]; then
             echo "your fallback execution client is:" "${EC_FALLBACK_NODE1}"
@@ -604,9 +654,14 @@ query_fallback_execution_client() {
 }
 
 query_execution_client() {
-    if uname -a | grep -q aarch64; then
+    if [ ${NETWORK} = "gnosis" ]; then
       EXECUTION_CLIENT=$(whiptail --notags --title "Select execution client" --menu \
       "Which execution client do you want to run?  Choose Custom for 3rd parties like Infura" 9 60 2 \
+      "nm.yml" "Nethermind (.NET)" \
+      "NONE" "Custom" 3>&1 1>&2 2>&3)
+    elif uname -a | grep -q aarch64; then
+      EXECUTION_CLIENT=$(whiptail --notags --title "Select execution client" --menu \
+      "Which execution client do you want to run?  Choose Custom for 3rd parties like Infura" 9 60 3 \
       "nm.yml" "Nethermind (.NET)" \
       "geth.yml" "Geth (Go)" \
       "NONE" "Custom" 3>&1 1>&2 2>&3)
@@ -632,14 +687,18 @@ query_execution_client() {
         EC_NODE="${EC_CUSTOM_NODE}"
     else
         echo "Your execution client file is:" "${EXECUTION_CLIENT}"
-        EC_NODE="http://execution:8545"
+        if [ "${CONSENSUS_CLIENT}" == "nimbus-base.yml" -o "${CONSENSUS_CLIENT}" == "nimbus-consensus.yml" ]; then
+            EC_NODE="ws://execution:8546"
+        else
+            EC_NODE="http://execution:8545"
+        fi
     fi
     EC_FALLBACK_NODE1="${EC_NODE}"
     EC_FALLBACK_NODE2="${EC_NODE}"
 
-    if (whiptail --title "Select Option" --yesno "Do you want to use a fallback execution client?" 10 60) then
+    if (whiptail --title "Select Option" --yesno --defaultno "Do you want to use a fallback execution client?" 10 60) then
         query_fallback_execution_client
-        if [[ "${CONSENSUS_CLIENT}" != "prysm-base.yml" && "${CONSENSUS_CLIENT}" != "nimbus-base.yml" ]]; then
+        if [[ "${CONSENSUS_CLIENT}" != "prysm-base.yml" && "${CONSENSUS_CLIENT}" != "nimbus-base.yml" && "${CONSENSUS_CLIENT}" != "prysm-consensus.yml" && "${CONSENSUS_CLIENT}" != "nimbus-consensus.yml" ]]; then
             EC_NODE="${EC_NODE}"",""${EC_FALLBACK_NODE1}"
         fi
     fi
@@ -683,42 +742,12 @@ query_graffiti() {
 
 query_rapid_sync() {
     # Assume no to start
-    TEKU_RAPID_SYNC=""
-    LH_RAPID_SYNC=""
-    LS_RAPID_SYNC=""
-    NIMBUS_RAPID_SYNC=""
-    PRYSM_RAPID_SYNC=""
+    RAPID_SYNC_URL=""
 
-    case "${CONSENSUS_CLIENT}" in
-        "teku-base.yml" | "teku-consensus.yml")
-            if (whiptail --title "Select Option" --yesno "Do you want to use Teku rapid sync with remote checkpoint, e.g. Infura?" 10 60) then
-                query_remote_beacon
-                TEKU_RAPID_SYNC="--initial-state=${REMOTE_BEACON}/eth/v1/debug/beacon/states/finalized"
-            fi
-            ;;
-        "lh-base.yml" | "lh-consensus.yml")
-            if (whiptail --title "Select Option" --yesno "Do you want to use Lighthouse rapid sync with remote checkpoint, e.g. Infura?" 10 60) then
-                query_remote_beacon
-                LH_RAPID_SYNC="--checkpoint-sync-url=${REMOTE_BEACON}"
-            fi
-            ;;
-        "nimbus-base.yml" | "nimbus-consensus.yml")
-            if (whiptail --title "Select Option" --yesno "Do you want to use Nimbus rapid sync with remote checkpoint, e.g. Infura?" 10 60) then
-                query_remote_beacon
-                NIMBUS_RAPID_SYNC="${REMOTE_BEACON}"
-            fi
-            ;;
-        "lodestar-base.yml" | "lodestar-consensus.yml")
-            if (whiptail --title "Select Option" --yesno "Do you want to use Lodestar rapid sync with remote checkpoint, e.g. Infura?" 10 60) then
-		query_remote_beacon
-                LS_RAPID_SYNC="--weakSubjectivitySyncLatest=true --weakSubjectivityServerUrl=${REMOTE_BEACON}"
-            fi
-            ;;
-        "prysm-base.yml" | "prysm-consensus.yml")
-            ;;
-        *)
-            ;;
-    esac
+    if (whiptail --title "Select Option" --yesno --defaultno "Do you want to use CL rapid sync with remote checkpoint, e.g. Infura?" 10 60) then
+        query_remote_beacon
+        RAPID_SYNC_URL="${REMOTE_BEACON}"
+    fi
 }
 
 set_value_in_env() {
@@ -767,16 +796,13 @@ config () {
     query_network
     query_deployment
     case "${__deployment}" in
-      "node")
+      "node" | "blox" )
         query_consensus_client
         ;;
-      "validator")
+      "validator" | "rocket")
         query_validator_client
         ;;
-      "rocket")
-        query_validator_client_rocket
-        ;;
-      "blox" | "rpc")
+      "rpc")
         query_consensus_only_client
         ;;
       *)
@@ -824,16 +850,8 @@ config () {
     set_value_in_env
     var=CC_NODE
     set_value_in_env
-    var=TEKU_RAPID_SYNC
+    var=RAPID_SYNC_URL
     set_value_in_env
-    var=LH_RAPID_SYNC
-    set_value_in_env
-    var=LS_RAPID_SYNC
-    set_value_in_env
-    var=NIMBUS_RAPID_SYNC
-    set_value_in_env
-#    var=PRYSM_RAPID_SYNC
-#    set_value_in_env
     var=COMPOSE_FILE
     set_value_in_env
     var=EC_NODE
@@ -894,8 +912,6 @@ printhelp() {
     echo "     stops the Ethereum node software and destroys all data stores"
     echo "  prune-geth"
     echo "     stops the Geth execution client and prunes its DB. This takes about 4-5 hours"
-    echo "  rocketeer"
-    echo "     edits the Rocketpool docker-compose file to use eth-docker's clients"
     echo ""
     echo ""
     echo "The logs subcommand can be appended by flags and specify the container(s). example: "
