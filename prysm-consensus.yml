@@ -5,6 +5,7 @@ x-logging: &logging
     options:
       max-size: 10m
       max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
 x-build: &prysm-build
   context: ./prysm
@@ -21,20 +22,20 @@ services:
       <<: *prysm-build
     image: prysm-consensus:local
     user: prysmconsensus
-    user: root
     stop_grace_period: 1m
     volumes:
       - prysmconsensus-data:/var/lib/prysm
       - certs:/letsencrypt
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
+    expose:
+      - 8080/tcp
     ports:
       - ${PRYSM_PORT}:${PRYSM_PORT}/tcp
       - ${PRYSM_UDP_PORT}:${PRYSM_UDP_PORT}/udp
       - 4000:4000/tcp
     expose:
-      - 4000
-      - 3500
+      - 4000/tcp
+      - 5052/tcp
     networks:
       default:
         aliases:
@@ -49,6 +50,8 @@ services:
       - 0.0.0.0
       - --grpc-gateway-host
       - 0.0.0.0
+      - --grpc-gateway-port
+      - "5052"
       - --http-web3provider
       - ${EC_NODE}
       - --fallback-web3provider
@@ -71,6 +74,8 @@ services:
       - /letsencrypt/certs/certs/${DOMAIN}.crt
       - --tls-key
       - /letsencrypt/certs/private/${DOMAIN}.key
+      - --monitoring-host
+      - 0.0.0.0
     depends_on:
       - traefik
       - traefik-certs-dumper
@@ -79,7 +84,8 @@ services:
       - traefik.http.routers.cc.entrypoints=websecure
       - traefik.http.routers.cc.rule=Host(`${CC_HOST}.${DOMAIN}`)
       - traefik.http.routers.cc.service=cc
-      - traefik.http.services.cc.loadbalancer.server.port=3500
+      - traefik.http.routers.cc.tls.certresolver=letsencrypt
+      - traefik.http.services.cc.loadbalancer.server.port=5052
   traefik-certs-dumper:
     image: ldez/traefik-certs-dumper:latest
     entrypoint: ["/bin/sh", "-c"]

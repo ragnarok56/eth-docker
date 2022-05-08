@@ -30,9 +30,6 @@ scrape_configs:
     scrape_interval: 5s
     static_configs:
       - targets: ['consensus:8080']
-  - job_name: 'slasher'
-    static_configs:
-      - targets: ['slasher:8082']
   - job_name: 'node_exporter'
     scrape_interval: 5s
     static_configs:

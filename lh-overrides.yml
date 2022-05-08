@@ -9,12 +9,8 @@ services:
     command:
       - --http-port
       - ${CC_HTTP_PORT}
-      - --metrics
-      - --metrics-address
-      - 0.0.0.0
       - --metrics-port
       - ${CC_METRICS_PORT}
-      - --validator-monitor-auto
     volumes:
       - /data/eth/${NETWORK}/consensus:/var/lib/lighthouse
   validator:
@@ -23,9 +19,6 @@ services:
     expose:
       - ${VALIDATOR_METRICS_PORT}/tcp
     command:
-      - --metrics
-      - --metrics-address
-      - 0.0.0.0
       - --metrics-port
       - ${VALIDATOR_METRICS_PORT}
     volumes:

@@ -5,6 +5,7 @@ x-logging: &logging
     options:
       max-size: 10m
       max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
 services:
   execution:
@@ -20,7 +21,6 @@ services:
     user: geth
     volumes:
       - geth-eth1-data:/var/lib/goethereum
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     ports:
       - ${EC_P2P_PORT}:${EC_P2P_PORT}/tcp
@@ -28,17 +28,20 @@ services:
     expose:
       - ${EC_RPC_PORT}/tcp
       - ${EC_WS_PORT}/tcp
+      - 6060/tcp
     networks:
       default:
         aliases:
           - eth1
     <<: *logging
     entrypoint:
+      - docker-entrypoint.sh
       - geth
       - --http
       - --http.addr
       - 0.0.0.0
       - --http.vhosts=*
+      - --http.corsdomain=*
       - --http.api
       - web3,eth,net
       - --datadir
@@ -55,7 +58,20 @@ services:
       - --ws.api
       - web3,eth,net
       - --${EC_NETWORK}
+      - --metrics
+      - --metrics.expensive
+      - --pprof
+      - --pprof.addr
+      - 0.0.0.0
     command: ${GETH_CACHE}
+  set-prune-marker:
+    image: alpine:latest
+    user: "10001:10001"
+    restart: "no"
+    volumes:
+      - geth-eth1-data:/var/lib/goethereum
+    entrypoint: ["/bin/sh","-c"]
+    command: /bin/sh
   eth:
     depends_on:
       - execution

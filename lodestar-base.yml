@@ -5,6 +5,7 @@ x-logging: &logging
     options:
       max-size: 10m
       max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
 services:
   consensus:
@@ -20,13 +21,12 @@ services:
     stop_grace_period: 1m
     volumes:
       - lsconsensus-data:/var/lib/lodestar/consensus
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     ports:
-      - ${LS_PORT}:${LS_PORT}/tcp
-      - ${LS_PORT}:${LS_PORT}/udp
+      - ${CC_P2P_PORT:-9000}:${CC_P2P_PORT:-9000}/tcp
+      - ${CC_P2P_PORT:-9000}:${CC_P2P_PORT:-9000}/udp
     expose:
-      - 9596/tcp
+      - 5052/tcp
     <<: *logging
     entrypoint:
       - node
@@ -39,42 +39,36 @@ services:
       - "true"
       - --api.rest.host
       - 0.0.0.0
+      - --api.rest.port
+      - "5052"
       - --network.discv5.bindAddr
-      - "/ip4/0.0.0.0/udp/${LS_PORT}"
+      - "/ip4/0.0.0.0/udp/${CC_P2P_PORT:-9000}"
       - --network.localMultiaddrs
-      - "/ip4/0.0.0.0/tcp/${LS_PORT}"
-      - --eth1.providerUrl
+      - "/ip4/0.0.0.0/tcp/${CC_P2P_PORT:-9000}"
+      - --eth1.providerUrls
       - ${EC_NODE}
-      - --weakSubjectivitySyncLatest
-      - ${LS_RAPID_SYNC}
       - --logLevel
       - ${LOG_LEVEL}
       - --network
       - ${NETWORK}
+    command: ${LS_RAPID_SYNC}
   validator:
     restart: "${RESTART}"
-    build:
-      context: ./lodestar
-      dockerfile: ${LS_DOCKERFILE}
-      args:
-        - BUILD_TARGET=${LS_SRC_BUILD_TARGET}
-        - DOCKER_TAG=${LS_DOCKER_TAG}
     image: lodestar:local
     user: lsvalidator
     volumes:
       - lsvalidator-data:/var/lib/lodestar/validators
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     <<: *logging
     entrypoint:
       - node
       - --max-old-space-size=8192
-      - /usr/app/packages/cli/bin/lodestar
+      - /usr/app/node_modules/.bin/lodestar
       - validator
       - --rootDir
       - /var/lib/lodestar/validators
       - --server
-      - http://consensus:9596
+      - http://consensus:5052
       - --graffiti
       - ${GRAFFITI}
       - --logLevel
@@ -88,13 +82,14 @@ services:
     volumes:
       - lsvalidator-data:/var/lib/lodestar/validators
       - ${DEPCLI_LOCALDIR}/validator_keys:/validator_keys
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
+    environment:
+      - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-''}
     entrypoint:
       - validator-import.sh
       - node
       - --max-old-space-size=8192
-      - /usr/app/packages/cli/bin/lodestar
+      - /usr/app/node_modules/.bin/lodestar
       - account
       - validator
       - import
@@ -110,19 +105,18 @@ services:
     user: lsvalidator
     volumes:
       - lsvalidator-data:/var/lib/lodestar/validators
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - node
       - --max-old-space-size=8192
-      - /usr/app/packages/cli/bin/lodestar
+      - /usr/app/node_modules/.bin/lodestar
       - account
       - validator
       - voluntary-exit
       - --rootDir
       - /var/lib/lodestar/validators
       - --server
-      - http://consensus:9596
+      - http://consensus:5052
       -  --logLevel
       - ${LOG_LEVEL}
       - --network
@@ -133,12 +127,11 @@ services:
     user: lsvalidator
     volumes:
       - lsvalidator-data:/var/lib/lodestar/validators
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - node
       - --max-old-space-size=8192
-      - /usr/app/packages/cli/bin/lodestar
+      - /usr/app/node_modules/.bin/lodestar
       - account
       - validator
       - --rootDir

@@ -5,6 +5,7 @@ x-logging: &logging
     options:
       max-size: 10m
       max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
 services:
   execution:
@@ -60,6 +61,12 @@ services:
       - "true"
       - --Pruning.CacheMb
       - "4096"
+      - --Sync.AncientBodiesBarrier
+      - "1"
+      - --Sync.AncientReceiptsBarrier
+      - "1"
+      - --log
+      - ${LOG_LEVEL}
   eth:
     depends_on:
       - execution

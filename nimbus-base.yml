@@ -5,6 +5,7 @@ x-logging: &logging
     options:
       max-size: 10m
       max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
 services:
   consensus:
@@ -20,22 +21,28 @@ services:
     stop_grace_period: 1m
     volumes:
       - nimbus-data:/var/lib/nimbus
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
+    environment:
+      - NIMBUS_RAPID_SYNC=${NIMBUS_RAPID_SYNC:-}
+      - NETWORK=${NETWORK}
+    expose:
+      - 8008/tcp
     ports:
-      - ${NIM_PORT}:${NIM_PORT}/tcp
-      - ${NIM_PORT}:${NIM_PORT}/udp
+      - ${CC_P2P_PORT:-9000}:${CC_P2P_PORT:-9000}/tcp
+      - ${CC_P2P_PORT:-9000}:${CC_P2P_PORT:-9000}/udp
     networks:
       default:
         aliases:
           - eth2
     <<: *logging
     entrypoint:
+      - docker-entrypoint.sh
       - /usr/local/bin/nimbus_beacon_node
       - --data-dir=/var/lib/nimbus
       - --non-interactive
-      - --tcp-port=${NIM_PORT}
-      - --udp-port=${NIM_PORT}
+      - --status-bar=false
+      - --tcp-port=${CC_P2P_PORT:-9000}
+      - --udp-port=${CC_P2P_PORT:-9000}
       - --max-peers=${NIM_PEER_COUNT}
       - --network=${NETWORK}
       - --web3-url=${EC_NODE}
@@ -45,7 +52,33 @@ services:
       - --log-level=${LOG_LEVEL}
       - --rpc
       - --rpc-address=0.0.0.0
+      - --rest
+      - --rest-address=0.0.0.0
+      - --rest-port=5052
+      - --num-threads=0
       - --enr-auto-update=true
+      - --doppelganger-detection=false
+      - --metrics
+      - --metrics-port=8008
+      - --metrics-address=0.0.0.0
+      - --validator-monitor-auto
+      - --keymanager
+      - --keymanager-port=${KEY_API_PORT:-7500}
+      - --keymanager-address=0.0.0.0
+      - --keymanager-allow-origin=*
+      - --keymanager-token-file=/var/lib/nimbus/api-token.txt
+  get-keyapi-token:
+    restart: "no"
+    image: alpine:latest
+    user: "10002"
+    volumes:
+      - nimbus-data:/var/lib/nimbus
+      - /etc/localtime:/etc/localtime:ro
+    <<: *logging
+    entrypoint: ["/bin/sh","-c"]
+    command:
+      - |
+        cat /var/lib/nimbus/api-token.txt
   validator-import:
     restart: "no"
     image: nimbus:local
@@ -53,8 +86,9 @@ services:
     volumes:
       - nimbus-data:/var/lib/nimbus
       - ${DEPCLI_LOCALDIR}/validator_keys:/validator_keys
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
+    environment:
+      - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
     entrypoint:
       - validator-import.sh
       - /usr/local/bin/nimbus_beacon_node
@@ -69,7 +103,6 @@ services:
     user: user
     volumes:
       - nimbus-data:/var/lib/nimbus
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - /usr/local/bin/nimbus_beacon_node

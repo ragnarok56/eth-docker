@@ -5,6 +5,7 @@ x-logging: &logging
     options:
       max-size: 10m
       max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
 services:
   consensus:
@@ -20,11 +21,12 @@ services:
     stop_grace_period: 1m
     volumes:
       - nimbus-consensus-data:/var/lib/nimbus
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
+    expose:
+      - 8008/tcp
     ports:
-      - ${NIM_PORT}:${NIM_PORT}/tcp
-      - ${NIM_PORT}:${NIM_PORT}/udp
+      - ${CC_P2P_PORT:-9000}:${CC_P2P_PORT:-9000}/tcp
+      - ${CC_P2P_PORT:-9000}:${CC_P2P_PORT:-9000}/udp
     networks:
       default:
         aliases:
@@ -34,8 +36,9 @@ services:
       - /usr/local/bin/nimbus_beacon_node
       - --data-dir=/var/lib/nimbus
       - --non-interactive
-      - --tcp-port=${NIM_PORT}
-      - --udp-port=${NIM_PORT}
+      - --status-bar=false
+      - --tcp-port=${CC_P2P_PORT:-9000}
+      - --udp-port=${CC_P2P_PORT:-9000}
       - --max-peers=${NIM_PEER_COUNT}
       - --network=${NETWORK}
       - --web3-url=${EC_NODE}
@@ -44,14 +47,20 @@ services:
       - --log-level=${LOG_LEVEL}
       - --rest
       - --rest-address=0.0.0.0
-      - --subscribe-all-subnets
+      - --rest-port=5052
       - --enr-auto-update=true
       - --num-threads=0
+      - --doppelganger-detection=false
+      - --metrics
+      - --metrics-port=8008
+      - --metrics-address=0.0.0.0
+      - --validator-monitor-totals
     labels:
       - traefik.enable=true
       - traefik.http.routers.cc.service=cc
       - traefik.http.routers.cc.entrypoints=websecure
       - traefik.http.routers.cc.rule=Host(`${CC_HOST}.${DOMAIN}`)
+      - traefik.http.routers.cc.tls.certresolver=letsencrypt
       - traefik.http.services.cc.loadbalancer.server.port=5052
   eth:
     image: tianon/true

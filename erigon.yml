@@ -5,6 +5,7 @@ x-logging: &logging
     options:
       max-size: 10m
       max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
 services:
   erigon:
@@ -20,13 +21,13 @@ services:
     user: erigon
     volumes:
       - erigon-ec-data:/var/lib/erigon
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     ports:
       - ${EC_P2P_PORT}:${EC_P2P_PORT}/tcp
       - ${EC_P2P_PORT}:${EC_P2P_PORT}/udp
     expose:
       - 9090/tcp
+      - 6060/tcp
     networks:
       default:
         aliases:
@@ -46,13 +47,16 @@ services:
       - --chain
       - ${EC_NETWORK}
       - --prune=hrtc
+      - --metrics
+      - --metrics.addr
+      - 0.0.0.0
+      - --metrics.expensive
   execution:
     restart: "${RESTART}"
     image: erigon:local
     user: erigon
     volumes:
       - erigon-ec-data:/var/lib/erigon
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     expose:
       - ${EC_RPC_PORT}/tcp
@@ -64,6 +68,8 @@ services:
       - --datadir
       - /var/lib/erigon
       - --private.api.addr
+      - erigon:9090
+      - --txpool.api.addr
       - erigon:9090
       - --http.addr
       - 0.0.0.0

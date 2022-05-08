@@ -5,6 +5,7 @@ x-logging: &logging
     options:
       max-size: 10m
       max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
 services:
   execution:
@@ -22,7 +23,6 @@ services:
       - JAVA_OPTS=-Xmx4g
     volumes:
       - besu-eth1-data:/var/lib/besu
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     ports:
       - ${EC_P2P_PORT}:${EC_P2P_PORT}/tcp
@@ -30,6 +30,7 @@ services:
     expose:
       - ${EC_RPC_PORT}/tcp
       - ${EC_WS_PORT}/tcp
+      - 9545/tcp
     networks:
       default:
         aliases:
@@ -61,6 +62,9 @@ services:
       - ${LOG_LEVEL}
       - --network
       - ${EC_NETWORK}
+      - --metrics-enabled
+      - --metrics-host
+      - 0.0.0.0
       - --Xdata-storage-format=BONSAI
   eth:
     depends_on:

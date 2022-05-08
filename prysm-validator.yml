@@ -5,6 +5,7 @@ x-logging: &logging
     options:
       max-size: 10m
       max-file: "3"
+      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
 x-build: &prysm-build
   context: ./prysm
@@ -23,7 +24,6 @@ services:
     user: prysmvalidator
     volumes:
       - prysmvalidator-data:/var/lib/prysm
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     <<: *logging
     entrypoint:
@@ -39,20 +39,54 @@ services:
       - --verbosity
       - ${LOG_LEVEL}
       - --${NETWORK}
-      - --enable-doppelganger
       - --tls-cert
       - /etc/ssl/certs/ca-certificates.crt
       - --accept-terms-of-use
       # If you chose not to store the wallet password during import, comment out the two following lines
       - --wallet-password-file
       - /var/lib/prysm/password.txt
-  validator-account-list:
+      - --web
+      - --grpc-gateway-host
+      - 0.0.0.0
+      - --grpc-gateway-port
+      - ${KEY_API_PORT:-7500}
+      - --grpc-gateway-corsdomain=*
+      - --beacon-rpc-gateway-provider
+      - consensus:5052
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.prysm.entrypoints=web,websecure
+      - traefik.http.routers.prysm.rule=Host(`${PRYSM_HOST}.${DOMAIN}`)
+      - traefik.http.routers.prysm.tls.certresolver=letsencrypt
+      - traefik.http.services.prysm.loadbalancer.server.port=${KEY_API_PORT:-7500}
+  create-wallet:
+    restart: "no"
+    image: prysm-validator:local
+    user: prysmvalidator
+    environment:
+      - NETWORK=${NETWORK}
+    volumes:
+      - prysmvalidator-data:/var/lib/prysm
+      - /etc/localtime:/etc/localtime:ro
+    entrypoint: create-wallet.sh
+  get-keyapi-token:
+    restart: "no"
+    image: alpine:latest
+    user: "10000"
+    volumes:
+      - prysmvalidator-data:/var/lib/prysm
+      - /etc/localtime:/etc/localtime:ro
+    <<: *logging
+    entrypoint: ["/bin/sh","-c"]
+    command:
+      - |
+        cat /var/lib/prysm/auth-token
+  validator-list:
     restart: "no"
     image: prysm-validator:local
     user: prysmvalidator
     volumes:
       - prysmvalidator-data:/var/lib/prysm
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - validator
@@ -73,10 +107,12 @@ services:
     volumes:
       - prysmvalidator-data:/var/lib/prysm
       - ${DEPCLI_LOCALDIR}/validator_keys:/validator_keys
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
-    entrypoint: validator-import.sh
-    command:
+    environment:
+      - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-''}
+      - WALLET_PASSWORD=${WALLET_PASSWORD:-''}
+    entrypoint:
+      - validator-import.sh
       - validator
       - --verbosity
       - ${LOG_LEVEL}
@@ -93,7 +129,6 @@ services:
     user: prysmvalidator
     volumes:
       - prysmvalidator-data:/var/lib/prysm
-      - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - validator
