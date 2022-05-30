@@ -53,6 +53,10 @@ services:
       - 0.0.0.0
       - --rpc-ws-port
       - ${EL_WS_PORT:-8546}
+      - --max-peers
+      - ${EL_MAX_PEER_COUNT:-25}
+      - --fast-sync-min-peers
+      - ${EL_MIN_PEER_COUNT:-5}
       - --host-allowlist=*
       - --logging
       - ${LOG_LEVEL}
@@ -64,6 +68,7 @@ services:
       - --metrics-port
       - "6060"
       - --data-storage-format=BONSAI
+      - --sync-mode=X_SNAP
   eth:
     depends_on:
       - execution
