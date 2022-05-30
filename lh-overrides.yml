@@ -2,15 +2,15 @@ version: "3.4"
 services:
   consensus:
     ports:
-      - ${CC_METRICS_PORT}:${CC_METRICS_PORT}
+      - ${CL_METRICS_PORT}:${CL_METRICS_PORT}
     expose:
-      - ${CC_HTTP_PORT}/tcp
-      - ${CC_METRICS_PORT}/tcp
+      - ${CL_HTTP_PORT}/tcp
+      - ${CL_METRICS_PORT}/tcp
     command:
       - --http-port
-      - ${CC_HTTP_PORT}
+      - ${CL_HTTP_PORT}
       - --metrics-port
-      - ${CC_METRICS_PORT}
+      - ${CL_METRICS_PORT}
     volumes:
       - /data/eth/${NETWORK}/consensus:/var/lib/lighthouse
   validator:
