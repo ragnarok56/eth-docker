@@ -49,8 +49,10 @@ services:
       - ${CL_P2P_PORT:-9000}
       - --target-peers
       - ${CL_MAX_PEER_COUNT:-80}
-      - --eth1-endpoints
+      - --execution-endpoint
       - ${EL_NODE:-http://execution:8545}
+      - --execution-jwt
+      - /jwt.hex
       - --eth1-blocks-per-log-query
       - "150"
       - --debug-level=${LOG_LEVEL}

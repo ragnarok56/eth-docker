@@ -13,6 +13,7 @@ services:
       - ${CL_METRICS_PORT}
     volumes:
       - /data/eth/${NETWORK}/consensus:/var/lib/lighthouse
+      - /data/eth/${EL_NETWORK}/jwt.hex:/jwt.hex
   validator:
     ports:
       - ${VALIDATOR_METRICS_PORT}:${VALIDATOR_METRICS_PORT}
