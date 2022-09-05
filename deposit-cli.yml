@@ -1,6 +1,7 @@
-version: "3.4"
+version: "3.9"
 services:
   deposit-cli-new:
+    profiles: ["tools"]
     restart: "no"
     build:
       context: ./staking-deposit-cli
@@ -8,7 +9,7 @@ services:
         - BUILD_TARGET=${DEPCLI_SRC_BUILD_TARGET}
     image: staking-deposit-cli:local
     volumes:
-      - ${DEPCLI_LOCALDIR}:/app/.eth/
+      - ./.eth:/app/.eth/
     entrypoint:
       - docker-entrypoint.sh
       - python3
@@ -17,10 +18,11 @@ services:
       - --chain
       - ${NETWORK}
   deposit-cli-existing:
+    profiles: ["tools"]
     restart: "no"
     image: staking-deposit-cli:local
     volumes:
-      - ${DEPCLI_LOCALDIR}:/app/.eth/
+      - ./.eth:/app/.eth/
     entrypoint:
       - docker-entrypoint.sh
       - python3

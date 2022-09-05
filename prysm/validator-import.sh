@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Copy keys, then restart script without root
 if [ "$(id -u)" = '0' ]; then
   mkdir /val_keys
-  cp /validator_keys/* /val_keys/
+  cp /validator_keys/*.json /val_keys/
   chown prysmvalidator:prysmvalidator /val_keys/*
   exec gosu prysmvalidator "$BASH_SOURCE" "$@"
 fi
@@ -17,6 +17,12 @@ for arg do
   shift
   [ "$arg" = "--non-interactive" ] && continue
   set -- "$@" "$arg"
+done
+
+shopt -s nullglob
+for file in /val_keys/slashing_protection*.json; do
+  echo "Found slashing protection file ${file}, it will be imported."
+  validator slashing-protection-history import --datadir /var/lib/prysm --slashing-protection-json-file ${file} --accept-terms-of-use --${NETWORK}
 done
 
 if [ ${__non_interactive} = 1 ]; then
@@ -50,7 +56,7 @@ echo
 
 if [ $import -ne 0 ]; then
   echo
-  $@
+  "$@"
   echo
 fi
 

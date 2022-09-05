@@ -4,8 +4,8 @@ set -Eeuo pipefail
 # Copy keys, then restart script without root
 if [ "$(id -u)" = '0' ]; then
   mkdir /val_keys
-  cp /validator_keys/* /val_keys/
-  chown user:user /val_keys/*
+  cp /validator_keys/*.json /val_keys/
+  chown -R user:user /val_keys/
   exec gosu user "$BASH_SOURCE" "$@"
 fi
 
@@ -17,6 +17,13 @@ for arg do
   shift
   [ "$arg" = "--non-interactive" ] && continue
   set -- "$@" "$arg"
+done
+
+shopt -s nullglob
+for file in /val_keys/slashing_protection*.json; do
+  echo "Found slashing protection file ${file}, it will be imported."
+  /usr/local/bin/nimbus_beacon_node --data-dir=/var/lib/nimbus --network=${NETWORK} slashingdb import ${file}
+  rm ${file}
 done
 
 if [ ${__non_interactive} = 1 ]; then
