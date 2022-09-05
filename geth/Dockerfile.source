@@ -9,15 +9,21 @@ ARG BUILD_TARGET
 RUN apk update && apk add --no-cache make gcc musl-dev linux-headers git bash
 
 WORKDIR /src
-RUN bash -c "git clone https://github.com/ethereum/go-ethereum.git && cd go-ethereum && git config advice.detachedHead false && git fetch --all --tags && git checkout ${BUILD_TARGET} && make geth"
+RUN bash -c "git clone https://github.com/ethereum/go-ethereum.git && cd go-ethereum && git config advice.detachedHead false && git fetch --all --tags && if [[ ${BUILD_TARGET} =~ pr-.+ ]]; then git fetch origin pull/$(echo ${BUILD_TARGET} | cut -d '-' -f 2)/head:geth-pr; git checkout geth-pr; else git checkout ${BUILD_TARGET}; fi && make geth"
 
 # Pull all binaries into a second stage deploy container
 FROM alpine:latest
 
 ARG USER=geth
 ARG UID=10001
+# GID 10002 is deliberate so it can exchange secret with CL
+ARG GID=10002
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata bash su-exec
+
+RUN addgroup \
+    --gid "${GID}" \
+    "${USER}"
 
 # See https://stackoverflow.com/a/55757473/12429735RUN
 RUN adduser \
@@ -25,9 +31,10 @@ RUN adduser \
     --gecos "" \
     --shell "/sbin/nologin" \
     --uid "${UID}" \
+    --ingroup "${USER}" \
     "${USER}"
 
-RUN mkdir -p /var/lib/goethereum && chown ${USER}:${USER} /var/lib/goethereum
+RUN mkdir -p /var/lib/goethereum/ee-secret && chown -R ${USER}:${USER} /var/lib/goethereum && chmod -R 700 /var/lib/goethereum && chmod 777 /var/lib/goethereum/ee-secret
 
 # Copy executable
 COPY --from=builder /src/go-ethereum/build/bin/geth /usr/local/bin/
