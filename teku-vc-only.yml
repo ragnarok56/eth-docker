@@ -21,6 +21,10 @@ services:
     volumes:
       - teku-data:/var/lib/teku
       - /etc/localtime:/etc/localtime:ro
+    environment:
+      - JAVA_OPTS=${TEKU_HEAP:--XX:SoftMaxHeapSize=2g -Xmx5g}
+      - MEV_BOOST=${MEV_BOOST}
+      - VC_EXTRAS=${VC_EXTRAS:-}
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
@@ -69,6 +73,7 @@ services:
       - voluntary-exit
       - --beacon-node-api-endpoint=${CL_NODE:-http://consensus:5052}
       - --validator-keys=/var/lib/teku/validator-keys:/var/lib/teku/validator-passwords
+      - --validator-keys=/var/lib/teku/validator/key-manager/local:/var/lib/teku/validator/key-manager/local-passwords
 
   validator-keys:
     profiles: ["tools"]

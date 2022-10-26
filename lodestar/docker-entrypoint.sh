@@ -1,4 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+if [ "$(id -u)" = '0' ]; then
+  chown -R lsconsensus:lsconsensus /var/lib/lodestar
+  exec su-exec lsconsensus docker-entrypoint.sh "$@"
+fi
 
 if [ ! -f /var/lib/lodestar/consensus/api-token.txt ]; then
     __token=api-token-0x$(echo $RANDOM | md5sum | head -c 32)$(echo $RANDOM | md5sum | head -c 32)
@@ -18,14 +23,6 @@ if [[ -O "/var/lib/lodestar/consensus/ee-secret/jwtsecret" ]]; then
   chmod 666 /var/lib/lodestar/consensus/ee-secret/jwtsecret
 fi
 
-# Check whether we should override TTD
-if [ -n "${OVERRIDE_TTD}" ]; then
-  __override_ttd="--terminal-total-difficulty-override=${OVERRIDE_TTD}"
-  echo "Overriding TTD to ${OVERRIDE_TTD}"
-else
-  __override_ttd=""
-fi
-
 # Check whether we should use MEV Boost
 if [ "${MEV_BOOST}" = "true" ]; then
   __mev_boost="--builder --builder.urls=${MEV_NODE:-http://mev-boost:18550}"
@@ -42,4 +39,4 @@ else
   __rapid_sync=""
 fi
 
-exec "$@" ${__mev_boost} ${__rapid_sync} ${__override_ttd}
+exec "$@" ${__mev_boost} ${__rapid_sync} ${CL_EXTRAS}

@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+if [ "$(id -u)" = '0' ]; then
+  chown -R user:user /var/lib/nimbus
+  exec gosu user docker-entrypoint.sh "$@"
+fi
+
 if [ ! -f /var/lib/nimbus/api-token.txt ]; then
     __token=api-token-0x$(echo $RANDOM | md5sum | head -c 32)$(echo $RANDOM | md5sum | head -c 32)
     echo $__token > /var/lib/nimbus/api-token.txt
@@ -16,14 +21,6 @@ if [[ -O "/var/lib/nimbus/ee-secret" ]]; then
 fi
 if [[ -O "/var/lib/nimbus/ee-secret/jwtsecret" ]]; then
   chmod 666 /var/lib/nimbus/ee-secret/jwtsecret
-fi
-
-# Check whether we should override TTD
-if [ -n "${OVERRIDE_TTD}" ]; then
-  __override_ttd="--terminal-total-difficulty-override=${OVERRIDE_TTD}"
-  echo "Overriding TTD to ${OVERRIDE_TTD}"
-else
-  __override_ttd=""
 fi
 
 if [ -n "${RAPID_SYNC_URL:+x}" -a ! -f "/var/lib/nimbus/setupdone" ]; then
@@ -48,4 +45,4 @@ else
   __doppel="--doppelganger-detection=false"
 fi
 
-exec "$@" ${__mev_boost} ${__override_ttd} ${__doppel}
+exec "$@" ${__mev_boost} ${__doppel} ${CL_EXTRAS} ${VC_EXTRAS}

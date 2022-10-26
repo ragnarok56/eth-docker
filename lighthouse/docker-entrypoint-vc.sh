@@ -1,11 +1,9 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-# Check whether we should flag override TTD in VC logs
-if [ -n "${OVERRIDE_TTD}" ]; then
-  __override_ttd="--terminal-total-difficulty-override=${OVERRIDE_TTD}"
-else
-  __override_ttd=""
+if [ "$(id -u)" = '0' ]; then
+  chown -R lhvalidator:lhvalidator /var/lib/lighthouse
+  exec gosu lhvalidator docker-entrypoint.sh "$@"
 fi
 
 # Check whether we should use MEV Boost
@@ -31,4 +29,4 @@ else
   __doppel=""
 fi
 
-exec "$@" ${__mev_boost} ${__beacon_stats} ${__override_ttd} ${__doppel}
+exec "$@" ${__mev_boost} ${__beacon_stats} ${__doppel} ${VC_EXTRAS}

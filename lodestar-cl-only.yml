@@ -26,9 +26,9 @@ services:
     environment:
       - RAPID_SYNC_URL=${RAPID_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
-      - OVERRIDE_TTD=${OVERRIDE_TTD}
       - MEV_BOOST=${MEV_BOOST}
       - MEV_NODE=${MEV_NODE}
+      - CL_EXTRAS=${CL_EXTRAS:-}
     ports:
       - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
       - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
@@ -47,6 +47,12 @@ services:
       - ${CL_REST_PORT:-5052}
       - --port
       - ${CL_P2P_PORT:-9000}
+      - --metrics
+      - "true"
+      - --metrics.port
+      - "8008"
+      - --metrics.address
+      - 0.0.0.0
       - --execution.urls
       - ${EL_NODE}
       - --jwt-secret

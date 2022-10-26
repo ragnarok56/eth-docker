@@ -25,14 +25,6 @@ if [[ -O "/var/lib/goethereum/ee-secret/jwtsecret" ]]; then
   chmod 666 /var/lib/goethereum/ee-secret/jwtsecret
 fi
 
-# Check whether we should override TTD
-if [ -n "${OVERRIDE_TTD}" ]; then
-  __override_ttd="--override.terminaltotaldifficulty=${OVERRIDE_TTD}"
-  echo "Overriding TTD to ${OVERRIDE_TTD}"
-else
-  __override_ttd=""
-fi
-
 # Set verbosity
 shopt -s nocasematch
 case ${LOG_LEVEL} in
@@ -58,8 +50,8 @@ case ${LOG_LEVEL} in
 esac
 
 if [ -f /var/lib/goethereum/prune-marker ]; then
-  "$@" snapshot prune-state
+  "$@" ${EL_EXTRAS} snapshot prune-state
   rm -f /var/lib/goethereum/prune-marker
 else
-  exec "$@" ${__override_ttd} ${__verbosity}
+  exec "$@" ${__verbosity} ${EL_EXTRAS}
 fi

@@ -1,4 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+if [ "$(id -u)" = '0' ]; then
+  chown -R teku:teku /var/lib/teku
+  exec gosu teku docker-entrypoint.sh "$@"
+fi
 
 if [[ -f /var/lib/teku/teku-keyapi.keystore && $(date +%s -r /var/lib/teku/teku-keyapi.keystore) -lt $(date +%s --date="300 days ago") ]]; then
     rm /var/lib/teku/teku-keyapi.keystore
@@ -27,18 +32,10 @@ fi
 
 # Check whether we should rapid sync
 if [ -n "${RAPID_SYNC_URL:+x}" ]; then
-    __rapid_sync="--initial-state=${RAPID_SYNC_URL}"
+    __rapid_sync="--initial-state=${RAPID_SYNC_URL}/eth/v2/debug/beacon/states/finalized"
     echo "Checkpoint sync enabled"
 else
     __rapid_sync=""
-fi
-
-# Check whether we should override TTD
-if [ -n "${OVERRIDE_TTD}" ]; then
-  __override_ttd="--Xnetwork-total-terminal-difficulty-override=${OVERRIDE_TTD}"
-  echo "Overriding TTD to ${OVERRIDE_TTD}"
-else
-  __override_ttd=""
 fi
 
 # Check whether we should use MEV Boost
@@ -57,4 +54,4 @@ else
   __beacon_stats=""
 fi
 
-exec "$@" ${__mev_boost} ${__rapid_sync} ${__override_ttd} ${__beacon_stats}
+exec "$@" ${__mev_boost} ${__rapid_sync} ${__beacon_stats} ${CL_EXTRAS} ${VC_EXTRAS}
