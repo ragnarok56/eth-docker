@@ -11,10 +11,12 @@ services:
   consensus:
     restart: "unless-stopped"
     build:
+      target: consensus
       context: ./nimbus
       args:
         - BUILD_TARGET=${NIM_SRC_BUILD_TARGET}
         - DOCKER_TAG=${NIM_DOCKER_TAG}
+        - DOCKER_VC_TAG=${NIM_DOCKER_VC_TAG}
       dockerfile: ${NIM_DOCKERFILE}
     image: nimbus:local
     user: user
@@ -30,8 +32,10 @@ services:
       - MEV_BOOST=${MEV_BOOST}
       - MEV_NODE=${MEV_NODE}
       - DOPPELGANGER=${DOPPELGANGER}
+      - LOG_LEVEL=${LOG_LEVEL}
       - CL_EXTRAS=${CL_EXTRAS:-}
       - VC_EXTRAS=${VC_EXTRAS:-}
+      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
     ports:
       - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
       - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
@@ -53,7 +57,6 @@ services:
       - --web3-url=${EL_NODE}
       - --jwt-secret=/var/lib/nimbus/ee-secret/jwtsecret
       - --graffiti=${GRAFFITI}
-      - --log-level=${LOG_LEVEL}
       - --rest
       - --rest-address=0.0.0.0
       - --rest-port=${CL_REST_PORT:-5052}
@@ -61,34 +64,12 @@ services:
       - --metrics
       - --metrics-port=8008
       - --metrics-address=0.0.0.0
-      - --validator-monitor-auto
       - --keymanager
       - --keymanager-port=${KEY_API_PORT:-7500}
       - --keymanager-address=0.0.0.0
       - --keymanager-allow-origin=*
       - --keymanager-token-file=/var/lib/nimbus/api-token.txt
       - --suggested-fee-recipient=${FEE_RECIPIENT}
-
-  validator-import:
-    profiles: ["tools"]
-    restart: "no"
-    image: nimbus:local
-    user: root
-    volumes:
-      - nimbus-data:/var/lib/nimbus
-      - ./.eth/validator_keys:/validator_keys
-      - /etc/localtime:/etc/localtime:ro
-    environment:
-      - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
-      - NETWORK=${NETWORK}
-    entrypoint:
-      - validator-import.sh
-      - /usr/local/bin/nimbus_beacon_node
-      - --data-dir=/var/lib/nimbus
-      - --network=${NETWORK}
-      - deposits
-      - import
-      - /val_keys
 
   validator-exit:
     profiles: ["tools"]

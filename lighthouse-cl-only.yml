@@ -30,8 +30,8 @@ services:
       - MEV_NODE=${MEV_NODE}
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
-      - MALLOC_ARENA_MAX=4
       - CL_EXTRAS=${CL_EXTRAS:-}
+      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
     ports:
       - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
       - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
@@ -71,19 +71,17 @@ services:
       - --validator-monitor-auto
       - --suggested-fee-recipient
       - ${FEE_RECIPIENT}
-      - --subscribe-all-subnets
-      - --import-all-attestations
     labels:
       - traefik.enable=true
-      - traefik.http.routers.cl.service=cl
-      - traefik.http.routers.cl.entrypoints=websecure
-      - traefik.http.routers.cl.rule=Host(`${CL_HOST}.${DOMAIN}`)
-      - traefik.http.routers.cl.tls.certresolver=letsencrypt
-      - traefik.http.routers.cllb.service=cl
-      - traefik.http.routers.cllb.entrypoints=websecure
-      - traefik.http.routers.cllb.rule=Host(`${CL_LB}.${DOMAIN}`)
-      - traefik.http.routers.cllb.tls.certresolver=letsencrypt
-      - traefik.http.services.cl.loadbalancer.server.port=${CL_REST_PORT:-5052}
+      - traefik.http.routers.${CL_HOST:-cl}.service=${CL_HOST:-cl}
+      - traefik.http.routers.${CL_HOST:-cl}.entrypoints=websecure
+      - traefik.http.routers.${CL_HOST:-cl}.rule=Host(`${CL_HOST:-cl}.${DOMAIN}`)
+      - traefik.http.routers.${CL_HOST:-cl}.tls.certresolver=letsencrypt
+      - traefik.http.routers.${CL_HOST:-cl}lb.service=${CL_HOST:-cl}
+      - traefik.http.routers.${CL_HOST:-cl}lb.entrypoints=websecure
+      - traefik.http.routers.${CL_HOST:-cl}lb.rule=Host(`${CL_LB:-cl-lb}.${DOMAIN}`)
+      - traefik.http.routers.${CL_HOST:-cl}lb.tls.certresolver=letsencrypt
+      - traefik.http.services.${CL_HOST:-cl}.loadbalancer.server.port=${CL_REST_PORT:-5052}
 volumes:
   lhconsensus-data:
   jwtsecret:

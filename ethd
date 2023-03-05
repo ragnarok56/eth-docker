@@ -19,11 +19,12 @@ determine_distro() {
     # If Linux, try to determine specific distribution
     if [ "$__uname" == "linux" ]; then
         # If available, use LSB to identify distribution
-        if [ -n "$(which lsb_release 2>/dev/null)" ]; then
+        if [ -n "$(command -v lsb_release 2>/dev/null)" ]; then
             __distro=$(lsb_release -i | cut -d: -f2 | sed s/'^\t'//)
         # Otherwise, use release info file
         else
-            __distro=$(ls -d /etc/[A-Za-z]*[_-][rv]e[lr]* | grep -v "lsb" | cut -d'/' -f3 | cut -d'-' -f1 | cut -d'_' -f1)
+            #__distro=$(ls -d /etc/[A-Za-z]*[_-][rv]e[lr]* | grep -v "lsb" | cut -d'/' -f3 | cut -d'-' -f1 | cut -d'_' -f1)
+            __distro=$(find /etc -maxdepth 1 -type f -name '[A-Za-z]*[_-][rv]e[lr]*' | grep -v "lsb" | cut -d'/' -f3 | cut -d'-' -f1 | cut -d'_' -f1)
         fi
     else
         __distro=""
@@ -31,7 +32,7 @@ determine_distro() {
     # For everything else (or if above failed), just use generic identifier
     [ "$__distro" == "" ] && __distro=$__uname
     unset __uname
-    __distro=$(echo $__distro | tr "[:upper:]" "[:lower:]")
+    __distro=$(echo "$__distro" | tr "[:upper:]" "[:lower:]")
 }
 
 determine_sudo() {
@@ -50,21 +51,20 @@ determine_docker() {
 
 determine_compose() {
 # This is mainly for Debian and docker-ce, where docker-compose does not exist
-  type -P docker-compose >/dev/null 2>&1
-  if [ $? -ne 0 ]; then
+  if ! type -P docker-compose >/dev/null 2>&1; then
     __compose_exe="docker compose"
   else
-    __compose_version=$($__maybe_sudo docker-compose --version | sed -n -e "s/.*version [v]\?\([0-9.-]*\).*/\1/p")
-    __compose_version_major=$(echo $__compose_version | cut -f1 -d.)
-    __compose_version_minor=$(echo $__compose_version | cut -f2 -d.)
-    if ! [ "$__compose_version_major" -eq "$__compose_version_major" -a "$__compose_version_minor" -eq "$__compose_version_minor" ] 2> /dev/null; then
+    __compose_version=$($__maybe_sudo docker-compose --version | sed -n -E -e "s/.*version [v]?([0-9.-]*).*/\1/ip")
+    __compose_version_major=$(echo "$__compose_version" | cut -f1 -d.)
+    __compose_version_minor=$(echo "$__compose_version" | cut -f2 -d.)
+    if ! [ "$__compose_version_major" -eq "$__compose_version_major" ] && [ "$__compose_version_minor" -eq "$__compose_version_minor" ] 2> /dev/null; then
         echo "docker-compose version detection failed. Please report this output so it can be fixed."
         $__maybe_sudo docker-compose --version
-    elif [ "$__compose_version_major" -eq 1 -a "$__compose_version_minor" -lt 28 ]; then
+    elif [ "$__compose_version_major" -eq 1 ] && [ "$__compose_version_minor" -lt 28 ]; then
       echo "Error: Outdated docker-compose version detected ($__compose_version). Please upgrade to version 1.28.0 or later." >&2
       if [[ "$__distro" = "ubuntu" ]]; then
         __major_version=$(lsb_release -r | cut -d: -f2 | sed s/'^\t'// | cut -d. -f1)
-        if [ ${__major_version} -lt 22 ]; then
+        if [ "${__major_version}" -lt 22 ]; then
           echo
           while true; do
             read -rp "Do you want to update docker-compose to v1.29.2? (yes/no) " yn
@@ -89,28 +89,34 @@ determine_compose() {
 }
 
 upgrade_compose() {
-  type -P docker-compose >/dev/null 2>&1
-  if [ $? -eq 0 ]; then
+  if type -P docker-compose >/dev/null 2>&1; then
     __compose_version=$($__maybe_sudo docker-compose --version | sed -n -e "s/.*version \([0-9.-]*\).*/\1/p")
-    __compose_version_major=$(echo $__compose_version | cut -f1 -d.)
-    __compose_version_minor=$(echo $__compose_version | cut -f2 -d.)
-    if [ "$__compose_version_major" -eq 1 -a "$__compose_version_minor" -lt 28 ]; then
+    __compose_version_major=$(echo "$__compose_version" | cut -f1 -d.)
+    __compose_version_minor=$(echo "$__compose_version" | cut -f2 -d.)
+    if [ "$__compose_version_major" -eq 1 ] && [ "$__compose_version_minor" -lt 28 ]; then
       echo "Found docker-compose version $__compose_version_major.$__compose_version_minor, upgrading to 1.29.2"
       ${__auto_sudo} apt-get install -y curl
       ${__auto_sudo} curl -fsSL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/bin/docker-compose
       ${__auto_sudo} chmod +x /usr/bin/docker-compose
     fi
     __compose_version=$($__maybe_sudo docker-compose --version | sed -n -e "s/.*version \([0-9.-]*\).*/\1/p")
-    __compose_version_major=$(echo $__compose_version | cut -f1 -d.)
-    __compose_version_minor=$(echo $__compose_version | cut -f2 -d.)
-    if [ "$__compose_version_major" -eq 1 -a "$__compose_version_minor" -lt 28 ]; then
+    __compose_version_major=$(echo "$__compose_version" | cut -f1 -d.)
+    __compose_version_minor=$(echo "$__compose_version" | cut -f2 -d.)
+    if [ "$__compose_version_major" -eq 1 ] && [ "$__compose_version_minor" -lt 28 ]; then
       echo "Updating docker-compose failed. It is still version $__compose_version_major.$__compose_version_minor."
       echo "Please manually update docker-compose to version 1.29.2. These commands should do it:"
-      echo "sudo curl -fsSL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/bin/docker-compose"
+      echo "sudo curl -fsSL \"https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)\" -o /usr/bin/docker-compose"
       echo "sudo chmod +x /usr/bin/docker-compose"
       exit 1
     fi
   fi
+}
+
+prep_prometheus() {
+# Create custom-prom.yml if it doesn't exist
+    if [ ! -f "./prometheus/custom-prom.yml" ]; then
+        $__as_owner touch "./prometheus/custom-prom.yml"
+    fi
 }
 
 handle_root() {
@@ -124,7 +130,7 @@ handle_root() {
 }
 
 check_for_snap() {
-    if [[ "$__distro" = "ubuntu" && -n "$(which snap)" && -n "$(snap list 2>/dev/null | grep -w 'docker')" ]]; then
+    if [[ "$__distro" = "ubuntu" && -n "$(command -v snap)" ]] && snap list 2>/dev/null | grep -qw 'docker'; then
         echo
         echo "WARNING! Snap docker package detected. This WILL result in issues."
         echo "Removing the package will delete volumes and require a resync,"
@@ -147,20 +153,19 @@ check_for_snap() {
 
 install() {
     check_for_snap
-    while true; do
-        read -rp "This will attempt to install docker and make your user part of the docker group. Do you wish to continue? (no/yes) " yn
-        case $yn in
-            [Yy]* ) break;;
-            * ) echo "Aborting, no changes made"; exit 0;;
-        esac
-    done
+    read -rp "This will attempt to install docker and make your user part of the docker group. Do you wish to continue? (no/yes) " yn
+    case $yn in
+        [Yy]* ) ;;
+        * ) echo "Aborting, no changes made"; exit 0;;
+    esac
     if [[ "$__distro" = "ubuntu" ]]; then
         __major_version=$(lsb_release -r | cut -d: -f2 | sed s/'^\t'// | cut -d. -f1)
-        if [ ${__major_version} -lt 18 ]; then
+        if [ "${__major_version}" -lt 18 ]; then
             echo "This script cannot install docker on Ubuntu ${__major_version}. Consider upgrading to 22.04 or 20.04"
+            exit 0
         fi
-        if [ -z "$(which docker)" ]; then
-            ${__auto_sudo} apt-get update && ${__auto_sudo} apt-get install -y ca-certificates curl gnupg lsb-release whiptail bc
+        if [ -z "$(command -v docker)" ]; then
+            ${__auto_sudo} apt-get update && ${__auto_sudo} apt-get install -y ca-certificates curl gnupg lsb-release whiptail bc chrony
             ${__auto_sudo} mkdir -p /etc/apt/keyrings
             ${__auto_sudo} curl -fsSL https://download.docker.com/linux/ubuntu/gpg | ${__auto_sudo} gpg --dearmor -o /etc/apt/keyrings/docker.gpg
             ${__auto_sudo} echo \
@@ -175,15 +180,15 @@ install() {
         __groups=$(${__as_owner} groups)
         if [[ ! "$__groups" =~ "docker" ]]; then
             echo "Making your user part of the docker group"
-            ${__auto_sudo} usermod -aG docker ${OWNER}
+            ${__auto_sudo} usermod -aG docker "${OWNER}"
             echo "Please run newgrp docker or log out and back in"
         else
             echo "Your user is already part of the docker group"
         fi
     elif [[ "$__distro" =~ "debian" ]]; then
-        if [ -z "$(which docker)" ]; then
+        if [ -z "$(command -v docker)" ]; then
             ${__auto_sudo} apt-get update
-            ${__auto_sudo} apt-get -y install ca-certificates curl gnupg lsb-release whiptail bc
+            ${__auto_sudo} apt-get -y install ca-certificates curl gnupg lsb-release whiptail bc chrony
             ${__auto_sudo} mkdir -p /etc/apt/keyrings
             ${__auto_sudo} curl -fsSL https://download.docker.com/linux/debian/gpg | ${__auto_sudo} gpg --dearmor -o /etc/apt/keyrings/docker.gpg
             ${__auto_sudo} echo \
@@ -195,14 +200,72 @@ install() {
         else
             echo "Docker is already installed"
         fi
+        __groups=$(${__as_owner} groups)
+        if [[ ! "$__groups" =~ "docker" ]]; then
+            echo "Making your user part of the docker group"
+            ${__auto_sudo} usermod -aG docker "${OWNER}"
+            echo "Please run newgrp docker or log out and back in"
+        else
+            echo "Your user is already part of the docker group"
+        fi
     else
         echo "This script does not know how to install docker on $__distro"
+    fi
+
+    if ! [[ "$__distro" = "ubuntu" ]] || [[ "$__distro" =~ "debian" ]]; then
+        exit 0
+    fi
+
+    # We only get here on Ubuntu or Debian
+    __install_base=$(basename "$(dirname "$(realpath "${BASH_SOURCE[0]}")")")
+    if [ "${__install_base}" = "eth-docker" ]; then
+        read -rp "Do you want to be able to call 'ethd' from anywhere? (yes/no) " yn
+        case $yn in
+            [Nn]* ) exit 0;;
+            * ) ;;
+        esac
+        if grep -q "alias ethd" ~/.profile; then
+            sed -i'.original' -e "/alias ethd/d" ~/.profile
+        fi
+        echo "alias ethd=$(realpath "${BASH_SOURCE[0]}")" >>~/.profile
+        if grep -q "cat.*\.motd" ~/.profile; then
+            sed -i'.original' -e "/cat.*\.motd/d" ~/.profile
+        fi
+        echo "cat $(dirname "$(realpath "${BASH_SOURCE[0]}")")/.motd" >>~/.profile
+        echo "Go ahead and 'source ~/.profile' or log out and back in."
+        echo "After that, you can use the command 'ethd'."
     fi
     return 0
 }
 
+check_for_apparmor() {
+# This function could be removed once https://github.com/moby/moby/issues/44970 is resolved
+    # Only relevant to ubuntu or debian
+    if [[ ! "$__distro" = "ubuntu" ]] && [[ ! "$__distro" =~ "debian" ]]; then
+        return 0
+    fi
+    # Docker-CE 23.0.x has an issue where containers will fail if apparmor
+    # is not installed. Remedy.
+    if [ "$(dpkg-query -W -f='${Status}' apparmor 2>/dev/null | grep -c "ok installed")" = "0" ]; then
+        echo "apparmor is required for docker-ce 23.0.x to function"
+        echo
+        while true; do
+            read -rp "Do you consent to installation of apparmor? (yes/no) " yn
+            case $yn in
+                [Nn]* ) echo "No changes made"; return 0;;
+                * ) break;;
+            esac
+        done
+        ${__auto_sudo} apt-get update
+        ${__auto_sudo} apt-get -y install apparmor
+    fi
+    return 0
+}
+
+# Arguments are passed, but shellcheck doesn't recognize that
+# shellcheck disable=SC2120
 update() {
-    if [[ `${__as_owner} git status --porcelain` ]]; then
+    if [[ $(${__as_owner} git status --porcelain) ]]; then
         __dirty=1
     else
         __dirty=0
@@ -221,10 +284,10 @@ update() {
         # BASH_SOURCE so newer code gets to do the update. Use an ENV var
         # to avoid infinite loop
         export ETHDSECUNDO=1
-        exec "${BASH_SOURCE}" update $@
+        exec "${BASH_SOURCE[0]}" update "$@"
     fi
 
-    __keeptargets=0
+    __keeptargets=1
     __targetcli=""
     while :
     do
@@ -233,8 +296,21 @@ update() {
         fi
         case "$1" in
             --keep-targets)
+                if [ -n "${__targetcli}" ]; then
+                    echo "Error: --keep-targets and --refresh-targets cannot be used together; use either option once only"
+                    exit 1
+                fi
                 __keeptargets=1
                 __targetcli="--keep-targets"
+                shift
+                ;;
+            --refresh-targets)
+                if [ -n "${__targetcli}" ]; then
+                    echo "Error: --keep-targets and --refresh-targets cannot be used together; use either option once only"
+                    exit 1
+                fi
+                __keeptargets=0
+                __targetcli="--refresh-targets"
                 shift
                 ;;
             *)
@@ -244,33 +320,37 @@ update() {
         esac
     done
 
+# docker-ce 23.0.x has this as a dependency
+    check_for_apparmor
+
+# envmigrate used to be called w/ arguments and checks for that
+# shellcheck disable=SC2119
     envmigrate
 
     if [ "${__switched_branch-}" -eq 1 ]; then
         # This code has changed, run it again on the new branch
         export ETHDSECUNDO=1 #Not strictly necessary but this way we don't rely on what happens earlier
         export ETHDSWITCHED=1
-        exec "${BASH_SOURCE}" update $__targetcli
+        exec "${BASH_SOURCE[0]}" update $__targetcli
     fi
 
-    docompose build --pull
+    dodocker system prune --force
     docompose --profile tools build --pull
     exec 3>&1
     exec 4>&2
     exec 1> /dev/null
     exec 2> /dev/null
-    docompose pull || true
+    docompose --profile tools pull --ignore-pull-failures || true
     exec 1>&3
     exec 2>&4
 
     echo
-    cmp -s "${ENV_FILE}" "${ENV_FILE}".bak
-    if [ $? -ne 0 ]; then
+    if ! cmp -s "${ENV_FILE}" "${ENV_FILE}".bak; then
         echo "List of changes made to ${ENV_FILE} during migration - current on left, original on right:"
         echo
         diff -y --suppress-common-lines "${ENV_FILE}" "${ENV_FILE}".bak
 	echo
-        if [ $__pre_merge -eq 1 ]; then
+        if [ "$__pre_merge" -eq 1 ]; then
             echo "You appear to be coming from a pre-merge setup."
             echo "A copy of your original settings is in .env.premerge"
             echo
@@ -281,15 +361,15 @@ update() {
     else
         echo "No changes made to ${ENV_FILE} during migration"
     fi
-    if [ $__el_infura -eq 1 ]; then
+    if [ "$__el_infura" -eq 1 ]; then
         echo
         echo "Detected use of an Infura project as an EL or failover EL. This is no longer supported with merge."
         echo "Please adjust your EL_NODE variable manually."
     fi
-    if [ $__el_adjusted -eq 1 ]; then
+    if [ "$__el_adjusted" -eq 1 ]; then
         echo
         echo "Your EL_NODE variable has been adjusted to use the new Engine API port"
-    elif [ $__pre_merge -eq 1 ]; then
+    elif [ "$__pre_merge" -eq 1 ]; then
         echo
         echo "Your EL_NODE variable has not been adjusted to use the new Engine API port, as you had a non-standard value."
         echo "Please take a look and adjust manually."
@@ -298,14 +378,14 @@ update() {
     echo "Your ${ENV_FILE} configuration settings have been migrated to a fresh copy. You can \
 find the original contents in ${ENV_FILE}.bak."
     if [ $__keeptargets = "0" ]; then
-      echo "NB: If you made changes to the source or binary build targets, these have NOT \
-been migrated, please recreate these changes yourself."
+      echo "NB: If you made changes to the source or binary build targets, these have been \
+reset to defaults."
     fi
     echo
     echo "An ./ethd up command will start using the new images and configuration."
     if [[ "$__distro" = "ubuntu" ]]; then
       __major_version=$(lsb_release -r | cut -d: -f2 | sed s/'^\t'// | cut -d. -f1)
-      if [ ${__major_version} -lt 20 ]; then
+      if [ "${__major_version}" -lt 20 ]; then
          echo
          echo "Ubuntu ${__major_version} is older than the recommended 22.04 or 20.04 version"
          echo
@@ -313,7 +393,7 @@ been migrated, please recreate these changes yourself."
     fi
 
     unset ETHDSECUNDO
-    if [[ ${ETHDSWITCHED-} -eq 1 ]]; then
+    if [[ "${ETHDSWITCHED-}" -eq 1 ]]; then
         unset ETHDSWITCHED
         echo
         echo "You were migrated to the $(${__as_owner} git name-rev --name-only HEAD) branch of eth-docker"
@@ -322,6 +402,7 @@ been migrated, please recreate these changes yourself."
     delete_erigon
     # If this is called by an older version of ethd, envmigrate
     # is in its own bash instance: Need to kill the ethd parent
+# shellcheck disable=SC2009
     if ps $PPID | grep -q "ethd"; then
         echo
         echo "Updated from an older version of eth-docker. You'll see \"Terminated\","
@@ -343,6 +424,8 @@ been migrated, please recreate these changes yourself."
     fi
 }
 
+# envmigrate used to be called w/ arguments and checks for that
+# shellcheck disable=SC2120
 envmigrate() {
     if [ -z "${ETHDSECUNDO-}" ]; then
         # We'd only ever hit this if called from an older version of ethd, so let's
@@ -359,33 +442,33 @@ envmigrate() {
             done
         else
             __keep=""
-            if [ ${KEEPTARGETS-} -eq 1 ]; then
+            if [ "${KEEPTARGETS-}" -eq 1 ]; then
                 __keep="--keep-targets"
             fi
         fi
-        exec "${BASH_SOURCE}" update ${__keep}
+        exec "${BASH_SOURCE[0]}" update ${__keep}
     fi
 
     if [ ! -f "./${ENV_FILE}" ]; then
         return
     fi
 
-    ALL_VARS=( COMPOSE_FILE FEE_RECIPIENT EL_NODE GRAFFITI NETWORK MEV_BOOST MEV_RELAYS MEV_NODE \
+    ALL_VARS=( COMPOSE_FILE FEE_RECIPIENT EL_NODE GRAFFITI NETWORK MEV_BOOST MEV_RELAYS MEV_MIN_BID MEV_NODE \
             CL_MAX_PEER_COUNT CL_MIN_PEER_COUNT EL_MAX_PEER_COUNT EL_MIN_PEER_COUNT DOMAIN ACME_EMAIL \
             CF_EMAIL CF_API_TOKEN AWS_PROFILE AWS_HOSTED_ZONE_ID GRAFANA_HOST DISTRIBUTED BESU_HEAP TEKU_HEAP \
             PROM_HOST HOST_IP PRYSM_HOST EE_HOST EL_HOST EL_LB EL_WS_HOST EL_WS_LB CL_HOST CL_LB DDNS_SUBDOMAIN \
             DDNS_PROXY RAPID_SYNC_URL CL_NODE BEACON_STATS_API BEACON_STATS_MACHINE EL_P2P_PORT CL_P2P_PORT \
             PRYSM_PORT DOPPELGANGER PRYSM_UDP_PORT GRAFANA_PORT KEY_API_PORT TRAEFIK_WEB_PORT TRAEFIK_WEB_HTTP_PORT \
             CL_REST_PORT EL_RPC_PORT EL_WS_PORT EE_PORT ERIGON_TORRENT_PORT LOG_LEVEL JWT_SECRET EL_EXTRAS CL_EXTRAS \
-            VC_EXTRAS SSV_P2P_PORT SSV_P2P_PORT_UDP )
-    TARGET_VARS=( NIM_SRC_BUILD_TARGET NIM_DOCKER_TAG NIM_DOCKERFILE TEKU_SRC_BUILD_TARGET TEKU_DOCKER_TAG \
+            VC_EXTRAS ARCHIVE_NODE SSV_P2P_PORT SSV_P2P_PORT_UDP ERIGON_P2P_PORT_2 ERIGON_P2P_PORT_3 )
+    TARGET_VARS=( NIM_SRC_BUILD_TARGET NIM_DOCKER_TAG NIM_DOCKER_VC_TAG NIM_DOCKERFILE TEKU_SRC_BUILD_TARGET TEKU_DOCKER_TAG \
                 TEKU_DOCKERFILE LH_SRC_BUILD_TARGET LH_DOCKER_TAG LH_DOCKERFILE PRYSM_SRC_BUILD_TARGET \
-                PRYSM_DOCKER_TAG PRYSM_DOCKERFILE ERIGON_SRC_BUILD_TARGET ERIGON_DOCKER_TAG ERIGON_DOCKERFILE \
-                AKULA_SRC_BUILD_TARGET AKULA_DOCKER_TAG AKULA_DOCKERFILE MEV_DOCKERFILE MEV_DOCKER_TAG \
+                PRYSM_DOCKER_TAG PRYSM_DOCKER_VC_TAG PRYSM_DOCKERFILE ERIGON_SRC_BUILD_TARGET ERIGON_DOCKER_TAG \
+                ERIGON_DOCKERFILE MEV_DOCKERFILE MEV_DOCKER_TAG NIMEL_SRC_BUILD_TARGET NIMEL_DOCKER_TAG NIMEL_DOCKERFILE \
                 LS_SRC_BUILD_TARGET LS_DOCKER_TAG LS_DOCKERFILE GETH_SRC_BUILD_TARGET GETH_DOCKER_TAG \
                 GETH_DOCKERFILE NM_SRC_BUILD_TARGET NM_DOCKER_TAG NM_DOCKERFILE BESU_SRC_BUILD_TARGET \
-                BESU_DOCKER_TAG BESU_DOCKERFILE SSV2_NODE_TAG DEPCLI_SRC_BUILD_TARGET DEPCLI_DOCKER_TAG \
-                NODE_EXPORTER_IGNORE_MOUNT_REGEX )
+                BESU_DOCKER_TAG BESU_DOCKERFILE SSV2_NODE_TAG DEPCLI_SRC_BUILD_TARGET DEPCLI_DOCKER_TAG W3S_DOCKER_TAG \
+                PG_DOCKER_TAG RETH_SRC_BUILD_TARGET RETH_DOCKER_TAG RETH_DOCKERFILE NODE_EXPORTER_IGNORE_MOUNT_REGEX )
     OLD_VARS=( LH_PORT PRYSM_WEB_PORT EC_NODE REWARDS_TO GETH_CACHE \
             EC_HOST EC_LB EC_WS_HOST EC_WS_LB CC_HOST CC_LB EC_P2P_PORT CC_NODE CC_P2P_PORT EC_RPC_PORT EC_WS_PORT )
     NEW_VARS=( CL_P2P_PORT KEY_API_PORT EL_NODE FEE_RECIPIENT EL_EXTRAS \
@@ -414,7 +497,7 @@ envmigrate() {
     # Migrate over user settings
     for var in "${ALL_VARS[@]}"; do
         value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env.source" || true)
-        if [ -n "${value}" -o "${var}" = "GRAFFITI" -o "${var}" = "MEV_RELAYS" ]; then
+        if [ -n "${value}" ] || [ "${var}" = "GRAFFITI" ] || [ "${var}" = "MEV_RELAYS" ]; then
             if [ "${var}" = "COMPOSE_FILE" ]; then
                 migrate_compose_file
             fi
@@ -445,11 +528,12 @@ envmigrate() {
     var="COMPOSE_FILE"
     value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
     # It's CL&VC, CL-only, or VC-only
+# I do mean to match literally
+# shellcheck disable=SC2076
     if [[ "${value}" =~ "prysm.yml" || "${value}" =~ "lighthouse.yml" || "${value}" =~ "teku.yml" || "${value}" =~ "nimbus.yml" || "${value}" =~ "lodestar.yml" || \
         "${value}" =~ "-cl-only.yml" || "${value}" =~ "-vc-only.yml" ]]; then
         # Check for rewards
         var="FEE_RECIPIENT"
-        #value=$(grep --color=never -Po "^${var}=\K.*" ".env" || true)
         value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
         if [[ -z "${value}" || ${value} != 0x* || ${#value} -ne 42 ]]; then
             whiptail --msgbox "A fee recipient ETH wallet address is required in order to start the client. This is for post-merge priority fees and, optionally, MEV. Please enter a valid ETH address in the next screen. Refer to eth-docker docs (https://eth-docker.net/docs/About/Rewards) for more information.\n\nCAUTION: \"./ethd up\" will fail if no valid address is set" 16 75
@@ -461,6 +545,8 @@ envmigrate() {
     # Check for Blox SSV 1 and auto migrate
     var="COMPOSE_FILE"
     value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
+# I do mean to match literally
+# shellcheck disable=SC2076
     if [[ "${value}" =~ "blox-ssv.yml" ]]; then
         query_blox_switch
     fi
@@ -479,12 +565,14 @@ envmigrate() {
     var="COMPOSE_FILE"
     value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
     # Case 1 ... CL, do we have an EL?
+# I do mean to match literally
+# shellcheck disable=SC2076
     if [[ "${value}" =~ "prysm.yml" || "${value}" =~ "lighthouse.yml" || "${value}" =~ "teku.yml" || "${value}" =~ "nimbus.yml" || "${value}" =~ "lodestar.yml" || "${value}" =~ "-cl-only.yml" ]]; then
-        if [[ ! "${value}" =~ "geth.yml" && ! "${value}" =~ "besu.yml" && ! "${value}" =~ "erigon.yml" && ! "${value}" =~ "nethermind.yml" && ! "${value}" =~ "akula.yml" ]]; then
+        if [[ ! "${value}" =~ "geth.yml" && ! "${value}" =~ "besu.yml" && ! "${value}" =~ "erigon.yml" && ! "${value}" =~ "nethermind.yml"  && ! "${value}" =~ "nimbus-el.yml" && ! "${value}" =~ "reth.yml" ]]; then
             whiptail --msgbox "An Execution Layer client is required alongside your Consensus Layer client come Ethereum Merge. Refer to eth-docker docs (https://eth-docker.net/docs/About/MergePrep) for more information.\n\nPlease start running your own EL soonest, as Infura will no longer be usable as an EL after The Merge.\n\nIf you run a distributed setup, you can shut off this nag screen by setting DISTRIBUTED=true in .env" 16 75
         fi
     # Case 2 ... EL, do we have a CL?
-    elif [[ "${value}" =~ "geth.yml" || "${value}" =~ "besu.yml" || "${value}" =~ "erigon.yml" || "${value}" =~ "nethermind.yml" || "${value}" =~ "akula.yml" ]]; then
+    elif [[ "${value}" =~ "geth.yml" || "${value}" =~ "besu.yml" || "${value}" =~ "erigon.yml" || "${value}" =~ "nethermind.yml" || "${value}" =~ "nimbus-el.yml" || "${value}" =~ "reth.yml" ]]; then
         if [[ ! "${value}" =~ "prysm.yml"  && ! "${value}" =~ "lighthouse.yml"  && ! "${value}" =~ "teku.yml"  && ! "${value}" =~ "nimbus.yml"  && ! "${value}" =~ "lodestar.yml"  && ! "${value}" =~ "-cl-only.yml" ]]; then
             whiptail --msgbox "A Consensus Layer client is required alongside your Execution Layer client come Ethereum Merge. Refer to eth-docker docs (https://eth-docker.net/docs/About/MergePrep) for more information.\n\nPlease start running your own CL soonest, as an EL alone will no longer be usable after The Merge.\n\nIf you run a distributed setup, you can shut off this nag screen by setting DISTRIBUTED=true in .env" 16 75
         fi
@@ -494,6 +582,8 @@ envmigrate() {
     __el_infura=0
     var="EL_NODE"
     value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
+# I do mean to match literally
+# shellcheck disable=SC2076
     if [[ "${value}" =~ "infura.io" ]]; then
        __el_infura=1
     fi
@@ -523,6 +613,8 @@ migrate_compose_file() {
     __old_ifs="$IFS"
     IFS=":"
     set -o noglob
+# Globbing is off
+# shellcheck disable=SC2206
     __ymlarray=($value) # split+glob with glob disabled, and split using : as delimiter
     set +o noglob
     IFS="$__old_ifs"
@@ -550,7 +642,7 @@ migrate_compose_file() {
             fi
         fi
     done
-    if [ "${__new_grafana}" = 0 -a "${__old_grafana}" = 1 ]; then
+    if [ "${__new_grafana}" = 0 ] && [ "${__old_grafana}" = 1 ]; then
         value="${value}:grafana.yml"
     fi
 }
@@ -558,13 +650,14 @@ migrate_compose_file() {
 delete_erigon() {
     # Check for Erigon
     var="COMPOSE_FILE"
-    #value=$(grep --color=never -Po "^${var}=\K.*" ".env" || true)
     value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
+# I do mean to match literally
+# shellcheck disable=SC2076
     if [[ ! "${value}" =~ "erigon.yml" ]]; then
         return
     fi
 
-    if [ -z "$(dodocker volume ls -q | grep $(basename $(realpath .))_erigon-ec-data)" ]; then
+    if ! dodocker volume ls -q | grep -q "$(basename "$(realpath .)")[_-]erigon-ec-data"; then
         return
     fi
 
@@ -579,9 +672,9 @@ delete_erigon() {
     done
 
     echo "Stopping Erigon container"
-    dodocker stop $(basename $(realpath .))_erigon_1 && dodocker rm -f $(basename $(realpath .))_erigon_1
+    dodocker stop "$(dodocker ps -q -f "name=erigon")" && dodocker rm -f "$(dodocker ps -a -q -f "name=erigon")"
     docompose stop execution && docompose rm -f execution
-    dodocker volume rm $(dodocker volume ls -q | grep $(basename $(realpath .))_erigon-ec-data)
+    dodocker volume rm "$(dodocker volume ls -q -f "name=erigon-ec-data")"
     echo ""
     echo "Erigon stopped and database deleted."
     echo ""
@@ -591,9 +684,9 @@ query_blox_switch() {
     echo "Detected SSV Node v1. SSV v2 testnet is the new hotness."
     echo
     echo "Stopping SSV Node container"
-    docker stop $(basename $(realpath .))_ssv-node_1 && docker rm -f $(basename $(realpath .))_ssv-node_1
+    dodocker stop "$(dodocker ps -q -f "name=ssv-node")" && dodocker rm -f "$(dodocker ps -a -q -f "name=ssv-node")"
     docompose stop ssv-node && docompose rm -f ssv-node
-    docker volume rm $(docker volume ls -q | grep $(basename $(realpath .))_ssv-data)
+    dodocker volume rm "$(dodocker volume ls -q -f "name=ssv-data")"
     echo ""
     echo "SSV Node stopped and database deleted."
     echo ""
@@ -607,6 +700,20 @@ query_blox_switch() {
     sed -i '/AbiVersion/d' blox-ssv-config.yaml
     sed -i '/Bootnodes/d' blox-ssv-config.yaml
     sed -i '/NetworkID/d' blox-ssv-config.yaml
+}
+
+attach-geth() {
+    if [ ! -f "./${ENV_FILE}" ]; then
+        echo "${ENV_FILE} configuration file not found, aborting."
+        exit 1
+    fi
+
+    if ! grep -q '^COMPOSE_FILE=.*geth\.yml' "${ENV_FILE}" 2>/dev/null ; then
+        echo "You do not appear to be using Geth, aborting."
+        exit 1
+    fi
+
+    docompose exec -it execution bash -c "geth attach /var/lib/goethereum/geth.ipc"
 }
 
 prune-geth() {
@@ -638,9 +745,19 @@ prune-geth() {
         exit 1
     fi
 
-    if [ $(df -P /var/lib/docker | awk '/[0-9]%/{print $(NF-2)}') -lt 41943040 ]; then
+    # Check for archive node
+    var="ARCHIVE_NODE"
+    value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
+    if [[ "${value}" = "true" ]]; then
+        echo "Geth is an archive node: Aborting."
+        return
+    fi
+
+    __docker_dir=$(docker system info --format '{{.DockerRootDir}}')
+
+    if [ "$(df -P ${__docker_dir} | awk '/[0-9]%/{print $(NF-2)}')" -lt 41943040 ]; then
         echo "You do not have enough free disk space. Make sure this reads at least 40G free (Avail):"
-        df -h /var/lib/docker
+        df -h "${__docker_dir}"
         echo ""
         echo "Aborting."
         exit 1
@@ -658,7 +775,9 @@ prune-geth() {
     sync_status=$(docompose exec -T execution wget -qO- "http://localhost:$rpc_port" --header 'Content-Type: application/json' --post-data '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}')
     exitstatus=$?
     if [ $exitstatus -ne 0 ]; then
-        echo "Unable to connect to Geth: Is it running? Aborting."
+        echo "Unable to connect to Geth: Is it running?"
+        echo "Output: ${sync_status}"
+        echo "Aborting."
         exit 1
     fi
 
@@ -680,7 +799,7 @@ prune-geth() {
     if [[ "${node_logs}" =~ $regex ]]; then
         snap_time=$(date -d "1970-${BASH_REMATCH[1]} ${BASH_REMATCH[2]}" +"%s")
         now_time=$(date +"%s")
-        if [ $(($snap_time+2100)) -gt $now_time ]; then
+        if [ $((snap_time+2100)) -gt "$now_time" ]; then
             echo "Please wait 35 minutes after snapshot generation finished. Aborting."
             exit 1
         fi
@@ -690,7 +809,7 @@ prune-geth() {
       while true; do
           read -rp "WARNING - this will stop Geth and prune its database. Do you wish to continue? (No/Yes) " yn
           case $yn in
-              [Yy]es ) break;;
+              [Yy][Ee][Ss] ) break;;
               * ) echo "Aborting, no changes made"; exit 1;;
           esac
       done
@@ -703,13 +822,121 @@ prune-geth() {
     docompose stop execution && docompose rm -f execution
     start
     echo ""
-    echo "Prune is running, you can observe it with 'sudo ./ethd logs -f execution'"
+    echo "Prune is running, you can observe it with './ethd logs -f execution'"
     echo ""
     echo "There should be three stages: \"Iterating state snapshot\", \"Pruning state data\", and \"Compacting database\". During \
 the \"Compacting database\" stage it may not output logs for an hour or so, that is normal."
     echo ""
     echo "When prune is done, which takes 4-5 hours, Geth will automatically start again."
-    echo "NB: 'sudo' can be left off the './ethd logs' command if your user is part of the 'docker' group."
+    echo ""
+}
+
+prune-nethermind() {
+    __non_interactive=0
+    while :
+    do
+        if [ -z ${1+x} ]; then
+            break
+        fi
+        case "$1" in
+            --non-interactive)
+                __non_interactive=1
+                shift
+                ;;
+            *)
+                echo "Error: Unknown option: $1" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    if [ ! -f "./${ENV_FILE}" ]; then
+        echo "${ENV_FILE} configuration file not found, aborting."
+        exit 1
+    fi
+
+    if ! grep -q '^COMPOSE_FILE=.*nethermind\.yml' "${ENV_FILE}" 2>/dev/null ; then
+        echo "You do not appear to be using Nethermind, aborting."
+        exit 1
+    fi
+
+    # Check for archive node
+    var="ARCHIVE_NODE"
+    value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
+    if [[ "${value}" = "true" ]]; then
+        echo "Nethermind is an archive node: Aborting."
+        return
+    fi
+
+    __docker_dir=$(docker system info --format '{{.DockerRootDir}}')
+
+    if [ "$(df -P ${__docker_dir} | awk '/[0-9]%/{print $(NF-2)}')" -lt 209715200 ]; then
+        echo "You do not have enough free disk space. Make sure this reads at least 200G free (Avail):"
+        df -h "${__docker_dir}"
+        echo ""
+        echo "Aborting."
+        exit 1
+    fi
+
+    rpc_line=$(grep '^EL_RPC_PORT=' "${ENV_FILE}")
+    regex='^EL_RPC_PORT=([0-9]+)'
+    if [[ ! "${rpc_line}" =~ ${regex} ]]; then
+        echo "Unable to determine EL_RPC_PORT, aborting."
+        exit 1
+    else
+        rpc_port="${BASH_REMATCH[1]}"
+    fi
+
+    sync_status=$(docompose exec -T execution wget -qO- "http://localhost:$rpc_port" --header 'Content-Type: application/json' --post-data '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}')
+    exitstatus=$?
+    if [ $exitstatus -ne 0 ]; then
+        echo "Unable to connect to Nethermind: Is it running?"
+        echo "Output: ${sync_status}"
+        echo "Aborting."
+        exit 1
+    fi
+
+    if [[ ! "${sync_status}" =~ "false" ]]; then
+        echo "Nethermind is not done syncing yet. Sync status:"
+        echo "${sync_status}"
+        echo ""
+        echo "Aborting."
+        exit 1
+    fi
+
+    if [ $__non_interactive = 0 ]; then
+      while true; do
+          read -rp "WARNING - this will prune Nethermind's database in the background. Do you wish to continue? (No/Yes) " yn
+          case $yn in
+              [Yy][Ee][Ss] ) break;;
+              * ) echo "Aborting, no changes made"; exit 1;;
+          esac
+      done
+    fi
+
+    echo ""
+    echo "Starting Nethermind prune"
+    echo ""
+
+    prune_result=$(docompose exec -T execution wget -qO- "http://localhost:1337" --header 'Content-Type: application/json' --post-data '{"jsonrpc":"2.0","method":"admin_prune","params":[],"id":1}')
+    exitstatus=$?
+    if [ $exitstatus -ne 0 ]; then
+        echo "Unable to start prune, error code ${exitstatus}. This is likely a bug."
+        echo "An attempt to run it returned this: ${prune_result}"
+        echo 'The command attempted was: docker-compose run --rm set-prune-marker "curl -s --data {\\\"method\\\":\\\"admin_prune\\\",\\\"params\\\":[],\\\"id\\\":1,\\\"jsonrpc\\\":\\\"2.0\\\"} -H Content-Type:\ application/json http://execution:8545"'
+        exit ${exitstatus}
+    fi
+    echo "Nethermind returns ${prune_result}"
+    if [[ ! "${prune_result}" =~ "Starting" ]]; then
+        echo "Unable to start prune. This is likely a bug."
+        exit 1
+    fi
+    echo ""
+    echo "Prune is running, you can observe it with './ethd logs -f --tail 50 execution'"
+    echo ""
+    echo "Please do not restart the node or restart Nethermind until prune is done."
+    echo ""
+    echo "When prune is done, Nethermind will automatically re-start."
     echo ""
 }
 
@@ -738,21 +965,21 @@ prep-keyimport() {
         fi
         case "$1" in
             --path)
-                if [ -z ${2+x} ]; then
+                if [ -z "${2+x}" ]; then
                     echo "--path requires a directory path, aborting"
                     exit 1
                 fi
-                if [ ! -d $2 ]; then
+                if [ ! -d "$2" ]; then
                     echo "$2 is not a directory"
                     exit 1
                 fi
-                if [ $(realpath "$2") = $(realpath ".eth/validator_keys") ]; then
+                if [ "$(realpath "$2")" = "$(realpath ".eth/validator_keys")" ]; then
                     echo "$2 is the default path, doing nothing special"
                     shift 2
                     continue
                 fi
                 IFS=$'\n'
-                files=$(find $2 -maxdepth 1 -name '*.json')
+                files=$(find "$2" -maxdepth 1 -name '*.json')
                 unset IFS
                 if [ -z "$files" ]; then
                     echo "No .json files found in $2, aborting"
@@ -767,19 +994,13 @@ prep-keyimport() {
                     rm -f ./.eth/validator_keys/*.json
                     echo "Moved existing json files to .eth/validator_keys/keybackup"
                 fi
-                cp $2/*.json .eth/validator_keys/
+                cp "$2"/*.json .eth/validator_keys/
                 shift 2
                 ;;
             --non-interactive)
                 if [ -z ${KEYSTORE_PASSWORD+x} ]; then
                     echo "KEYSTORE_PASSWORD not set, aborting"
                     exit 1
-                fi
-                if [ ${__oldskool:-} = 1 -a ${__prysm} = 1 ]; then
-                    if [ -z ${WALLET_PASSWORD+x} ]; then
-                        echo "Using Prysm and WALLET_PASSWORD not set, aborting"
-                        exit 1
-                    fi
                 fi
                 __non_interactive=1
                 shift
@@ -792,29 +1013,70 @@ prep-keyimport() {
     done
 }
 
-keyimport() {
-    __oldskool=1
-    prep-keyimport "$@"
-    if [ ${__non_interactive} = 1 ]; then
-        docompose run --rm validator-import --non-interactive
-    else
-        docompose run --rm validator-import
-    fi
-}
-
 keys() {
-    __oldskool=0
+    __owner_uid=$(id -u "${OWNER}")
     if [ "${1:-}" = "import" ]; then
         shift
         prep-keyimport "$@"
         if [ ${__non_interactive} = 1 ]; then
-            docompose run --rm validator-keys import --non-interactive
+            docompose run --rm -e OWNER_UID="${__owner_uid}" validator-keys import --non-interactive
         else
-            docompose run --rm validator-keys import
+            docompose run --rm -e OWNER_UID="${__owner_uid}" validator-keys import
         fi
+    elif [ "${1:-}" = "create-prysm-wallet" ]; then
+        docompose run --rm create-wallet
+        docompose stop validator
+        docompose rm --force validator
+        up
+    elif [ "${1:-}" = "prepare-address-change" ]; then
+        var="COMPOSE_FILE"
+        value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
+        if [[ ! "${value}" =~ "ethdo.yml" ]]; then
+            echo "Please make sure ethdo.yml is part of COMPOSE_FILE in .env"
+            echo "Without it, this step cannot be run"
+            exit 1
+        fi
+        docompose run --rm ethdo validator credentials set --prepare-offline --timeout 2m
+        echo
+        echo "Downloading ethdo"
+        REPO="wealdtech/ethdo"; \
+        curl -s https://api.github.com/repos/${REPO}/releases/latest | grep "browser_download_url.*linux-amd64.tar.gz" \
+        | head -1 \
+        | cut -d : -f 2,3 \
+        | tr -d \" \
+        | wget -qi - -O- \
+        | tar zxf - -C ./.eth/ethdo/ \
+        || echo "-> Could not download the latest version of '${REPO}' for amd64."
+        mkdir -p ./.eth/ethdo/arm64
+        curl -s https://api.github.com/repos/${REPO}/releases/latest | grep "browser_download_url.*linux-arm64.tar.gz" \
+        | head -1 \
+        | cut -d : -f 2,3 \
+        | tr -d \" \
+        | wget -qi - -O- \
+        | tar zxf - -C ./.eth/ethdo/arm64 \
+        || echo "-> Could not download the latest version of '${REPO}' for arm64."
+        mv ./.eth/ethdo/arm64/ethdo ./.eth/ethdo/ethdo-arm64
+        rm -rf ./.eth/ethdo/arm64
+        echo
+        echo "Copy the contents of ./.eth/ethdo to a USB drive, and prepare a Linux Live USB to safely enter your mnemonic."
+        echo "Please see ./.eth/ethdo/README.md for details"
+    elif [ "${1:-}" = "send-address-change" ]; then
+        var="COMPOSE_FILE"
+        value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
+        if [[ ! "${value}" =~ "ethdo.yml" ]]; then
+            echo "Please make sure ethdo.yml is part of COMPOSE_FILE in .env"
+            echo "Without it, this step cannot be run"
+            exit 1
+        fi
+        docompose run --rm ethdo validator credentials set --timeout 2m
     else
-        docompose run --rm validator-keys "$@"
+        docompose run --rm -e OWNER_UID="${__owner_uid}" validator-keys "$@"
     fi
+}
+
+keyimport() {
+    echo "The legacy keyimport command has been removed."
+    echo "Please try ./ethd keys import instead."
 }
 
 upgrade() {
@@ -845,13 +1107,15 @@ terminate() {
     while true; do
         read -rp "WARNING - this action will destroy all data stores for this Ethereum node. Do you wish to continue? (No/Yes) " yn
         case $yn in
-            [Yy]es ) break;;
+            [Yy][Ee][Ss] ) break;;
             * ) echo "Aborting, no changes made"; exit 1;;
         esac
     done
 
     down
-    dodocker volume rm $(dodocker volume ls -q | grep $(basename $(realpath .)))
+# In this case I want the word splitting, so rm can remove all volumes
+# shellcheck disable=SC2046
+    dodocker volume rm $(dodocker volume ls -q -f "name=$(basename "$(realpath .)")")
     echo ""
     echo "All containers stopped and all volumes deleted"
     echo ""
@@ -863,7 +1127,7 @@ restart() {
 }
 
 logs() {
-    docompose logs $@
+    docompose logs "$@"
 }
 
 cmd() {
@@ -877,6 +1141,7 @@ query_network() {
     "goerli" "Görli (né Prater) Testnet" \
     "mainnet" "Ethereum Mainnet" \
     "gnosis" "Gnosis Chain (né xDai)" \
+    "zhejiang" "Zhejiang Testnet" \
     "sepolia" "Sepolia Testnet (permissioned validators)" 3>&1 1>&2 2>&3)
 
     case "${NETWORK}" in
@@ -886,7 +1151,7 @@ query_network() {
        "gnosis")
            echo "You chose to run on Gnosis Chain"
            ;;
-       "goerli" | "sepolia" )
+       "goerli" | "sepolia" | "zhejiang" )
            echo "You chose to run on ${NETWORK} testnet"
            ;;
        *)
@@ -897,11 +1162,13 @@ query_network() {
 }
 
 query_deployment() {
-    if [ ${NETWORK} = "gnosis" ]; then
+    if [ "${NETWORK}" = "gnosis" ]; then
       __deployment=$(whiptail --notags --title "Select deployment type" --menu \
       "What kind of deployment do you want to run?" 11 80 3 \
       "node" "Ethereum node - consensus, execution and validator client" \
       "rpc" "Ethereum RPC node - consensus and execution client" 3>&1 1>&2 2>&3)
+    elif [ "${NETWORK}" = "zhejiang" ] ; then
+      __deployment=node
     elif uname -a | grep -q aarch64; then
       __deployment=$(whiptail --notags --title "Select deployment type" --menu \
       "What kind of deployment do you want to run?" 11 80 4 \
@@ -927,7 +1194,7 @@ query_deployment() {
 }
 
 query_validator_client() {
-    if [ ${NETWORK} = "gnosis" ]; then
+    if [ "${NETWORK}" = "gnosis" ]; then
       CONSENSUS_CLIENT=$(whiptail --notags --title "Select validator client" --menu \
       "Which validator client do you want to run?" 9 65 3 \
       "lighthouse-vc-only.yml" "Lighthouse validator client" \
@@ -973,12 +1240,14 @@ query_validator_client() {
 }
 
 query_consensus_client() {
-    if [ ${NETWORK} = "gnosis" ]; then
+    if [ "${NETWORK}" = "gnosis" ]; then
       CONSENSUS_CLIENT=$(whiptail --notags --title "Select consensus client" --menu \
       "Which consensus client do you want to run?" 10 65 3 \
       "lighthouse.yml" "Lighthouse (Rust) - consensus and validator client" \
       "teku.yml" "Teku (Java) - consensus and validator client" \
-      "lodestar.yml" "Lodestar (Javascript) - consensus and validator client" 3>&1 1>&2 2>&3)
+      "nimbus.yml" "Nimbus (Nim) - consensus and validator client" 3>&1 1>&2 2>&3)
+    elif [ "${NETWORK}" = "zhejiang" ]; then
+      CONSENSUS_CLIENT=lodestar.yml
     elif uname -a | grep -q aarch64; then
       CONSENSUS_CLIENT=$(whiptail --notags --title "Select consensus client" --menu \
       "Which consensus client do you want to run?" 10 65 3 \
@@ -1006,11 +1275,12 @@ query_consensus_client() {
 }
 
 query_consensus_only_client() {
-    if [ ${NETWORK} = "gnosis" ]; then
+    if [ "${NETWORK}" = "gnosis" ]; then
       CONSENSUS_CLIENT=$(whiptail --notags --title "Select consensus client" --menu \
       "Which consensus client do you want to run?" 10 65 3 \
       "lighthouse-cl-only.yml" "Lighthouse (Rust) - consensus client" \
-      "teku-cl-only.yml" "Teku (Java) - consensus client" 3>&1 1>&2 2>&3)
+      "teku-cl-only.yml" "Teku (Java) - consensus client" \
+      "nimbus-cl-only.yml" "Nimbus (Nim) - consensus client" 3>&1 1>&2 2>&3)
     elif uname -a | grep -q aarch64; then
       CONSENSUS_CLIENT=$(whiptail --notags --title "Select consensus client" --menu \
       "Which consensus client do you want to run?" 10 65 3 \
@@ -1047,18 +1317,18 @@ query_custom_execution_client() {
         var="JWT_SECRET"
         JWT_SECRET=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
     fi
-    EL_CUSTOM_NODE=$(whiptail --title "Configure custom execution client" --inputbox "What is the URL for your custom execution client? (right-click to paste)" 10 60 ${EL_CUSTOM_NODE} 3>&1 1>&2 2>&3)
+    EL_CUSTOM_NODE=$(whiptail --title "Configure custom execution client" --inputbox "What is the URL for your custom execution client? (right-click to paste)" 10 60 "${EL_CUSTOM_NODE}" 3>&1 1>&2 2>&3)
 
     exitstatus=$?
     if [ $exitstatus -eq 0 ]; then
-        echo "Your custom execution client is:" $EL_CUSTOM_NODE
+        echo "Your custom execution client is: $EL_CUSTOM_NODE"
     else
         echo "You chose Cancel."
         exit 1
     fi
 
     while true; do
-        JWT_SECRET=$(whiptail --title "Configure JWT secret" --inputbox "What is the JWT secret shared with the execution client? (right-click to paste)" 10 60 ${JWT_SECRET} 3>&1 1>&2 2>&3)
+        JWT_SECRET=$(whiptail --title "Configure JWT secret" --inputbox "What is the JWT secret shared with the execution client? (right-click to paste)" 10 60 "${JWT_SECRET}" 3>&1 1>&2 2>&3)
 
         exitstatus=$?
         if [ $exitstatus -eq 0 ]; then
@@ -1076,10 +1346,13 @@ query_custom_execution_client() {
 }
 
 query_execution_client() {
-    if [ ${NETWORK} = "gnosis" ]; then
+    if [ "${NETWORK}" = "gnosis" ]; then
       EXECUTION_CLIENT=$(whiptail --notags --title "Select execution client" --menu \
       "Which execution client do you want to run?" 9 60 2 \
-      "nethermind.yml" "Nethermind (.NET)" 3>&1 1>&2 2>&3)
+      "nethermind.yml" "Nethermind (.NET)" \
+      "erigon.yml" "Erigon (Go)" 3>&1 1>&2 2>&3)
+    elif [ "${NETWORK}" = "zhejiang" ]; then
+      EXECUTION_CLIENT=nethermind.yml
     elif uname -a | grep -q aarch64; then
       EXECUTION_CLIENT=$(whiptail --notags --title "Select execution client" --menu \
       "Which execution client do you want to run?" 9 60 3 \
@@ -1089,10 +1362,10 @@ query_execution_client() {
     else
       EXECUTION_CLIENT=$(whiptail --notags --title "Select execution client" --menu \
       "Which execution client do you want to run?" 12 60 5 \
-      "besu.yml" "Besu (Java)" \
       "nethermind.yml" "Nethermind (.NET)" \
+      "besu.yml" "Besu (Java)" \
       "geth.yml" "Geth (Go)" \
-      "erigon.yml" "Erigon - alpha (Go)" \
+      "erigon.yml" "Erigon (Go)" \
       "NONE" "Custom - Distributed" 3>&1 1>&2 2>&3)
     fi
 
@@ -1109,8 +1382,10 @@ query_execution_client() {
     else
         echo "Your execution client file is:" "${EXECUTION_CLIENT}"
 	if [[ "${CONSENSUS_CLIENT}" =~ "nimbus-" ]]; then
-            EL_NODE="ws://execution:8551"
+            EL_NODE="http://execution:8551"
 	else
+# This gets used, but shellcheck doesn't recognize that
+# shellcheck disable=SC2034
             EL_NODE="http://execution:8551"
 	fi
 	if [ "${EXECUTION_CLIENT}" = "erigon.yml" ]; then
@@ -1121,7 +1396,12 @@ query_execution_client() {
 
 query_grafana() {
     if (whiptail --title "Select Option" --yesno "Do you want to use Grafana dashboards?" 10 60) then
-        GRAFANA_CLIENT="grafana.yml:grafana-shared.yml"
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS doesn't do well with / bind mount - leave node-exporter, cadvisor and loki/promtail off by default
+            GRAFANA_CLIENT="grafana-rootless.yml:grafana-shared.yml"
+        else
+            GRAFANA_CLIENT="grafana.yml:grafana-shared.yml"
+        fi
     else
         unset GRAFANA_CLIENT
     fi
@@ -1138,7 +1418,7 @@ query_remote_beacon() {
         var="CL_NODE"
         REMOTE_BEACON=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
     fi
-    REMOTE_BEACON=$(whiptail --title "Configure remote consensus client" --inputbox "What is the URL for your remote consensus client? (right-click to paste)" 10 60 ${REMOTE_BEACON} 3>&1 1>&2 2>&3)
+    REMOTE_BEACON=$(whiptail --title "Configure remote consensus client" --inputbox "What is the URL for your remote consensus client? (right-click to paste)" 10 60 "${REMOTE_BEACON}" 3>&1 1>&2 2>&3)
 
     exitstatus=$?
     if [ $exitstatus -eq 0 ]; then
@@ -1163,13 +1443,19 @@ query_checkpoint_beacon() {
             "mainnet")
                 RAPID_SYNC_URL="https://beaconstate.info"
                 ;;
+            "gnosis")
+                RAPID_SYNC_URL="https://checkpoint.gnosischain.com/"
+                ;;
+            "zhejiang")
+                RAPID_SYNC_URL="https://checkpointz.zhejiang.ethpandaops.io/"
+                ;;
             *)
                 RAPID_SYNC_URL=""
                 ;;
         esac
     fi
 
-    RAPID_SYNC_URL=$(whiptail --title "Configure checkpoint consensus client" --inputbox "What is the URL for your checkpoint consensus client? (right-click to paste)" 10 60 ${RAPID_SYNC_URL} 3>&1 1>&2 2>&3)
+    RAPID_SYNC_URL=$(whiptail --title "Configure checkpoint consensus client" --inputbox "What is the URL for your checkpoint consensus client? (right-click to paste)" 10 60 "${RAPID_SYNC_URL}" 3>&1 1>&2 2>&3)
 
     exitstatus=$?
     if [ $exitstatus -eq 0 ]; then
@@ -1184,7 +1470,7 @@ query_graffiti() {
     var="GRAFFITI"
     GRAFFITI=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
 
-    GRAFFITI=$(whiptail --title "Configure Graffiti" --inputbox "What Graffiti do you want to send with your blocks? (up to 32 characters)" 10 37 ${GRAFFITI} 3>&1 1>&2 2>&3)
+    GRAFFITI=$(whiptail --title "Configure Graffiti" --inputbox "What Graffiti do you want to send with your blocks? (up to 32 characters)" 10 37 "${GRAFFITI}" 3>&1 1>&2 2>&3)
 
     exitstatus=$?
     if [ $exitstatus -eq 0 ]; then
@@ -1206,12 +1492,12 @@ query_coinbase() {
     FEE_RECIPIENT=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
 
     while true; do
-        FEE_RECIPIENT=$(whiptail --title "Configure Rewards Address" --inputbox "What is the address you want transaction rewards to be sent to by default? (right-click to paste, CANNOT be an ENS)" 10 60 ${FEE_RECIPIENT} 3>&1 1>&2 2>&3)
+        FEE_RECIPIENT=$(whiptail --title "Configure Rewards Address" --inputbox "What is the address you want transaction rewards to be sent to by default? (right-click to paste, CANNOT be an ENS)" 10 60 "${FEE_RECIPIENT}" 3>&1 1>&2 2>&3)
 
         exitstatus=$?
         if [ $exitstatus -eq 0 ]; then
             if [[ ${FEE_RECIPIENT} == 0x* && ${#FEE_RECIPIENT} -eq 42 ]]; then
-              echo "Your rewards address is:" ${FEE_RECIPIENT}
+              echo "Your rewards address is: ${FEE_RECIPIENT}"
               break
             else
               whiptail --msgbox "${FEE_RECIPIENT} is not a valid ETH address. You can try again or Cancel on the next screen.\n\nThe client will not start successfully until a valid ETH rewards address has been set." 16 75
@@ -1230,6 +1516,7 @@ query_coinbase() {
             echo
             # If this is called by an older version of ethd, envmigrate
             # is in its own bash instance: Need to kill the ethd parent
+# shellcheck disable=SC2009
             if ps $PPID | grep -q "ethd"; then
                 kill $PPID
             fi
@@ -1239,6 +1526,9 @@ query_coinbase() {
 }
 
 query_mev() {
+    if [ "${NETWORK}" = "zhejiang" ] || [ "${NETWORK}" = "gnosis" ]; then
+        return
+    fi
     var="MEV_BOOST"
     value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" ".env" || true)
     if (whiptail --title "Select Option" --yesno "Do you want to use MEV Boost?" 10 60) then
@@ -1249,24 +1539,36 @@ query_mev() {
         else
             case "${NETWORK}" in
                 "sepolia")
-                    MEV_RELAYS=https://0x845bd072b7cd566f02faeb0a4033ce9399e42839ced64e8b2adcfc859ed1e8e1a5a293336a49feac6d9a5edb779be53a@builder-relay-sepolia.flashbots.net
+                    MEV_RELAYS=https://0x845bd072b7cd566f02faeb0a4033ce9399e42839ced64e8b2adcfc859ed1e8e1a5a293336a49feac6d9a5edb779be53a@boost-relay-sepolia.flashbots.net
                     ;;
                 "goerli")
-                    MEV_RELAYS=https://0xafa4c6985aa049fb79dd37010438cfebeb0f2bd42b115b89dd678dab0670c1de38da0c4e9138c9290a398ecd9a0b3110@builder-relay-goerli.flashbots.net,https://0x821f2a65afb70e7f2e820a925a9b4c80a159620582c1766b1b09729fec178b11ea22abb3a51f07b288be815a1a2ff516@bloxroute.max-profit.builder.goerli.blxrbdn.com,https://0x8f7b17a74569b7a57e9bdafd2e159380759f5dc3ccbd4bf600414147e8c4e1dc6ebada83c0139ac15850eb6c975e82d0@builder-relay-goerli.blocknative.com,https://0xaa1488eae4b06a1fff840a2b6db167afc520758dc2c8af0dfb57037954df3431b747e2f900fe8805f05d635e9a29717b@relay-goerli.edennetwork.io
+                    MEV_RELAYS=https://0xafa4c6985aa049fb79dd37010438cfebeb0f2bd42b115b89dd678dab0670c1de38da0c4e9138c9290a398ecd9a0b3110@boost-relay-goerli.flashbots.net,\
+https://0x821f2a65afb70e7f2e820a925a9b4c80a159620582c1766b1b09729fec178b11ea22abb3a51f07b288be815a1a2ff516@bloxroute.max-profit.builder.goerli.blxrbdn.com,\
+https://0x8f7b17a74569b7a57e9bdafd2e159380759f5dc3ccbd4bf600414147e8c4e1dc6ebada83c0139ac15850eb6c975e82d0@builder-relay-goerli.blocknative.com,\
+https://0xaa1488eae4b06a1fff840a2b6db167afc520758dc2c8af0dfb57037954df3431b747e2f900fe8805f05d635e9a29717b@relay-goerli.edennetwork.io,\
+https://0xb1559beef7b5ba3127485bbbb090362d9f497ba64e177ee2c8e7db74746306efad687f2cf8574e38d70067d40ef136dc@relay-stag.ultrasound.money,\
+https://0xab78bf8c781c58078c3beb5710c57940874dd96aef2835e7742c866b4c7c0406754376c2c8285a36c630346aa5c5f833@goerli.aestus.live,\
+https://0xa6bcad37b5d647152a93c2807d8a56055f1e0d7480eb6505d46edc21593e400f0f13738bf2e892f85946234629a3036a@goerli.agnostic-relay.net
                     ;;
                 "mainnet")
-                    MEV_RELAYS=https://0xac6e77dfe25ecd6110b8e780608cce0dab71fdd5ebea22a16c0205200f2f8e2e3ad3b71d3499c54ad14d6c21b41a37ae@boost-relay.flashbots.net,https://0x8b5d2e73e2a3a55c6c87b8b6eb92e0149a125c852751db1422fa951e42a09b82c142c3ea98d0d9930b056a3bc9896b8f@bloxroute.max-profit.blxrbdn.com,https://0x9000009807ed12c1f08bf4e81c6da3ba8e3fc3d953898ce0102433094e5f22f21102ec057841fcb81978ed1ea0fa8246@builder-relay-mainnet.blocknative.com,https://0xb3ee7afcf27f1f1259ac1787876318c6584ee353097a50ed84f51a1f21a323b3736f271a895c7ce918c038e4265918be@relay.edennetwork.io
+                    MEV_RELAYS=https://0xac6e77dfe25ecd6110b8e780608cce0dab71fdd5ebea22a16c0205200f2f8e2e3ad3b71d3499c54ad14d6c21b41a37ae@boost-relay.flashbots.net,\
+https://0x8b5d2e73e2a3a55c6c87b8b6eb92e0149a125c852751db1422fa951e42a09b82c142c3ea98d0d9930b056a3bc9896b8f@bloxroute.max-profit.blxrbdn.com,\
+https://0x9000009807ed12c1f08bf4e81c6da3ba8e3fc3d953898ce0102433094e5f22f21102ec057841fcb81978ed1ea0fa8246@builder-relay-mainnet.blocknative.com,\
+https://0xb3ee7afcf27f1f1259ac1787876318c6584ee353097a50ed84f51a1f21a323b3736f271a895c7ce918c038e4265918be@relay.edennetwork.io,\
+https://0xa1559ace749633b997cb3fdacffb890aeebdb0f5a3b6aaa7eeeaf1a38af0a8fe88b9e4b1f61f236d2e64d95733327a62@relay.ultrasound.money,\
+https://0xa15b52576bcbf1072f4a011c0f99f9fb6c66f3e1ff321f11f461d15e31b1cb359caa092c71bbded0bae5b5ea401aab7e@aestus.live,\
+https://0xa7ab7a996c8584251c8f925da3170bdfd6ebc75d50f5ddc4050a6fdc77f2a3b5fce2cc750d0865e05d7228af97d69561@agnostic-relay.net
                     ;;
                 *)
                     MEV_RELAYS=""
                     ;;
             esac
         fi
-        MEV_RELAYS=$(whiptail --title "Configure MEV relays" --inputbox "What MEV relay(s) do you want to use? (right-click to paste)" 10 60 ${MEV_RELAYS} 3>&1 1>&2 2>&3)
+        MEV_RELAYS=$(whiptail --title "Configure MEV relays" --inputbox "What MEV relay(s) do you want to use? (right-click to paste)" 10 60 "${MEV_RELAYS}" 3>&1 1>&2 2>&3)
 
         exitstatus=$?
         if [ $exitstatus -eq 0 ]; then
-            echo "Your MEV relay(s): " ${MEV_RELAYS}
+            echo "Your MEV relay(s): ${MEV_RELAYS}"
         else
             echo "You chose Cancel."
             exit 0
@@ -1292,7 +1594,7 @@ config() {
     check_for_snap
     if [[ "$__distro" = "ubuntu" ]]; then
       __major_version=$(lsb_release -r | cut -d: -f2 | sed s/'^\t'// | cut -d. -f1)
-      if [ ${__major_version} -lt 20 ]; then
+      if [ "${__major_version}" -lt 20 ]; then
          echo
          echo "Ubuntu ${__major_version} is older than the recommended versions 22.04 or 20.04"
          echo
@@ -1341,6 +1643,8 @@ config() {
     esac
 
     MEV_BOOST=false
+# I do mean to match literally
+# shellcheck disable=SC2076
     if [[ ! "${CONSENSUS_CLIENT}" =~ "-vc-only.yml" ]]; then
         CL_NODE="http://consensus:5052"
 
@@ -1349,7 +1653,7 @@ config() {
         query_mev
         query_grafana
         query_coinbase
-        if [ ${__deployment} = "node" ]; then
+        if [ "${__deployment}" = "node" ]; then
           query_graffiti
         fi
     else
@@ -1357,6 +1661,8 @@ config() {
         unset GRAFANA_CLIENT
 
         query_remote_beacon
+# This gets used, but shellcheck doesn't recognize that
+# shellcheck disable=SC2034
         CL_NODE="${REMOTE_BEACON}"
         query_coinbase
         query_graffiti
@@ -1375,9 +1681,11 @@ config() {
     if [ "${MEV_BOOST}" = "true" ]; then
         COMPOSE_FILE="${COMPOSE_FILE}:mev-boost.yml"
     fi
-    if [ "${NETWORK}" = "goerli" -o "${NETWORK}" = "sepolia" ]; then
+    if [ "${NETWORK}" = "goerli" ] || [ "${NETWORK}" = "zhejiang" ]; then
         COMPOSE_FILE="${COMPOSE_FILE}:deposit-cli.yml"
     fi
+# Not multi-arch, this would break on ARM64
+#    COMPOSE_FILE="${COMPOSE_FILE}:ethdo.yml"
     if [ "${__deployment}" = "rocket" ]; then
         COMPOSE_FILE="${COMPOSE_FILE}:ext-network.yml"
         sed -i'.original' -e "s~name: traefik_default~name: rocketpool_net~" ext-network.yml
@@ -1403,8 +1711,12 @@ config() {
     set_value_in_env
     var=MEV_RELAYS
     set_value_in_env
+    if [[ "${NETWORK}" = "gnosis" ]] && [[ "${CONSENSUS_CLIENT}" =~ "nimbus" ]] ; then
+        NIM_DOCKERFILE=Dockerfile.sourcegnosis
+        var=NIM_DOCKERFILE
+        set_value_in_env
+    fi
 
-    docompose build --pull
     docompose --profile tools build --pull
     exec 3>&1
     exec 4>&2
@@ -1489,10 +1801,6 @@ version() {
             docompose exec execution erigon --version
             echo
             ;;&
-        *akula.yml* )
-            echo "eth-docker does not know how to display Akula's version"
-            echo
-            ;;&
         *mev-boost.yml* )
             docompose exec mev-boost /app/mev-boost -version
             echo
@@ -1508,7 +1816,7 @@ version() {
 }
 
 printhelp() {
-    me=$(basename "${BASH_SOURCE}")
+    me=$(basename "${BASH_SOURCE[0]}")
     echo "usage: ${me} [help|-h|--help] <subcommand>"
     echo ""
     echo "optional arguments:"
@@ -1523,9 +1831,9 @@ printhelp() {
     echo "  keys ACTION"
     echo "     list, delete, import keys; their fee recipients; and gas fees"
     echo "     Run without ACTION to get help text"
-    echo "  update [--keep-targets] "
+    echo "  update [--refresh-targets] "
     echo "     updates all client versions and eth-docker itself"
-    echo "     --keep-targets will keep your custom build targets in .env"
+    echo "     --refresh-targets will reset your custom build targets in .env to defaults"
     echo "  up (or start)"
     echo "     starts the Ethereum node, or restarts containers that had their image or"
     echo "     configuration changed"
@@ -1538,16 +1846,20 @@ printhelp() {
     echo "  logs"
     echo "     shows logs"
     echo "  cmd <command>"
-    echo "     executes an arbitrary docker-compose command. Use \"cmd help\" to list them"
+    echo "     executes an arbitrary docker compose command. Use \"cmd help\" to list them"
     echo "  terminate"
     echo "     stops the Ethereum node and destroys all data stores"
     echo "  prune-geth"
     echo "     stops the Geth execution client and prunes its DB. This takes about 4-5 hours"
+    echo "  prune-nethermind"
+    echo "     restarts the Nethermind execution client and prunes its DB."
+    echo "  attach-geth"
+    echo "     launches an interactive geth attach repl"
     echo ""
     echo ""
     echo "The logs subcommand can be appended by flags and specify the container(s). example: "
     echo ""
-    echo "  $me logs -f --tail 500 execution"
+    echo "  $me logs -f --tail 50 execution"
     echo "    shows logs only for execution service"
     echo ""
     echo ""
@@ -1561,9 +1873,11 @@ if [[ "$#" -eq 0 || "$1" == "help" || "$1" == "-h" || "$1" == "--help" ]]; then
     exit 0
 fi
 
-cd "$(dirname "$(realpath ${BASH_SOURCE})")"
+cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # Use this to make sure root doesn't end up owning files
 if [[ "$OSTYPE" == "darwin"* ]]; then
+# This is a macOS-ism
+# shellcheck disable=SC2016
     OWNER=$(stat -f '$Su' .)
 else
     OWNER=$(stat -c '%U' .)
@@ -1585,8 +1899,9 @@ determine_sudo
 handle_root
 determine_docker
 determine_compose
+prep_prometheus
 
-if [ $command = "install" ]; then
+if [ "$command" = "install" ]; then
     $command "$@"
     exit "$?"
 fi
@@ -1607,3 +1922,8 @@ if ! docompose --help >/dev/null 2>&1; then
 fi
 
 $command "$@"
+
+__result=$?
+if [ "$__result" -eq 127 ]; then
+    printhelp
+fi

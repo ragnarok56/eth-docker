@@ -13,6 +13,7 @@ x-build: &prysm-build
   args:
     - BUILD_TARGET=${PRYSM_SRC_BUILD_TARGET}
     - DOCKER_TAG=${PRYSM_DOCKER_TAG}
+    - DOCKER_VC_TAG=${PRYSM_DOCKER_VC_TAG}
 
 services:
   consensus:
@@ -33,6 +34,7 @@ services:
       - MEV_BOOST=${MEV_BOOST}
       - MEV_NODE=${MEV_NODE}
       - CL_EXTRAS=${CL_EXTRAS:-}
+      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
     ports:
       - ${HOST_IP:-0.0.0.0}:${PRYSM_PORT}:${PRYSM_PORT}/tcp
       - ${HOST_IP:-0.0.0.0}:${PRYSM_UDP_PORT}:${PRYSM_UDP_PORT}/udp
@@ -52,6 +54,11 @@ services:
       - 0.0.0.0
       - --grpc-gateway-port
       - ${CL_REST_PORT:-5052}
+      # Allow larger messages so credential change messages can be sent
+      - --rpc-max-page-size
+      - "200000"
+      - --grpc-max-msg-size
+      - "268435456"
       - --execution-endpoint
       - ${EL_NODE}
       - --jwt-secret
@@ -74,15 +81,15 @@ services:
       - ${FEE_RECIPIENT}
     labels:
       - traefik.enable=true
-      - traefik.http.routers.cl.entrypoints=websecure
-      - traefik.http.routers.cl.rule=Host(`${CL_HOST}.${DOMAIN}`)
-      - traefik.http.routers.cl.service=cl
-      - traefik.http.routers.cl.tls.certresolver=letsencrypt
-      - traefik.http.routers.cllb.service=cl
-      - traefik.http.routers.cllb.entrypoints=websecure
-      - traefik.http.routers.cllb.rule=Host(`${CL_LB}.${DOMAIN}`)
-      - traefik.http.routers.cllb.tls.certresolver=letsencrypt
-      - traefik.http.services.cl.loadbalancer.server.port=${CL_REST_PORT:-5052}
+      - traefik.http.routers.${CL_HOST:-cl}.entrypoints=websecure
+      - traefik.http.routers.${CL_HOST:-cl}.rule=Host(`${CL_HOST:-cl}.${DOMAIN}`)
+      - traefik.http.routers.${CL_HOST:-cl}.service=${CL_HOST:-cl}
+      - traefik.http.routers.${CL_HOST:-cl}.tls.certresolver=letsencrypt
+      - traefik.http.routers.${CL_HOST:-cl}lb.service=${CL_HOST:-cl}
+      - traefik.http.routers.${CL_HOST:-cl}lb.entrypoints=websecure
+      - traefik.http.routers.${CL_HOST:-cl}lb.rule=Host(`${CL_LB:-cl-lb}.${DOMAIN}`)
+      - traefik.http.routers.${CL_HOST:-cl}lb.tls.certresolver=letsencrypt
+      - traefik.http.services.${CL_HOST:-cl}.loadbalancer.server.port=${CL_REST_PORT:-5052}
 volumes:
   prysmconsensus-data:
   jwtsecret:

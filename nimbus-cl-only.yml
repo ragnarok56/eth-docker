@@ -11,10 +11,12 @@ services:
   consensus:
     restart: "unless-stopped"
     build:
+      target: consensus
       context: ./nimbus
       args:
         - BUILD_TARGET=${NIM_SRC_BUILD_TARGET}
         - DOCKER_TAG=${NIM_DOCKER_TAG}
+        - DOCKER_VC_TAG=${NIM_DOCKER_VC_TAG}
       dockerfile: ${NIM_DOCKERFILE}
     image: nimbus:local
     user: user
@@ -29,8 +31,11 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
       - MEV_NODE=${MEV_NODE}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - DOPPELGANGER=false
       - CL_EXTRAS=${CL_EXTRAS:-}
       - VC_EXTRAS=
+      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
     ports:
       - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
       - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
@@ -52,12 +57,10 @@ services:
       - --web3-url=${EL_NODE}
       - --jwt-secret=/var/lib/nimbus/ee-secret/jwtsecret
       - --graffiti=${GRAFFITI}
-      - --log-level=${LOG_LEVEL}
       - --rest
       - --rest-address=0.0.0.0
       - --rest-port=${CL_REST_PORT:-5052}
       - --enr-auto-update=true
-      - --doppelganger-detection=false
       - --metrics
       - --metrics-port=8008
       - --metrics-address=0.0.0.0
@@ -68,19 +71,18 @@ services:
       - --keymanager-allow-origin=*
       - --keymanager-token-file=/var/lib/nimbus/api-token.txt
       - --suggested-fee-recipient=${FEE_RECIPIENT}
-      - --subscribe-all-subnets
       - --in-process-validators=false
     labels:
       - traefik.enable=true
-      - traefik.http.routers.cl.service=cl
-      - traefik.http.routers.cl.entrypoints=websecure
-      - traefik.http.routers.cl.rule=Host(`${CL_HOST}.${DOMAIN}`)
-      - traefik.http.routers.cl.tls.certresolver=letsencrypt
-      - traefik.http.routers.cllb.service=cl
-      - traefik.http.routers.cllb.entrypoints=websecure
-      - traefik.http.routers.cllb.rule=Host(`${CL_LB}.${DOMAIN}`)
-      - traefik.http.routers.cllb.tls.certresolver=letsencrypt
-      - traefik.http.services.cl.loadbalancer.server.port=${CL_REST_PORT:-5052}
+      - traefik.http.routers.${CL_HOST:-cl}.service=${CL_HOST:-cl}
+      - traefik.http.routers.${CL_HOST:-cl}.entrypoints=websecure
+      - traefik.http.routers.${CL_HOST:-cl}.rule=Host(`${CL_HOST:-cl}.${DOMAIN}`)
+      - traefik.http.routers.${CL_HOST:-cl}.tls.certresolver=letsencrypt
+      - traefik.http.routers.${CL_HOST:-cl}lb.service=${CL_HOST:-cl}
+      - traefik.http.routers.${CL_HOST:-cl}lb.entrypoints=websecure
+      - traefik.http.routers.${CL_HOST:-cl}lb.rule=Host(`${CL_LB:-cl-lb}.${DOMAIN}`)
+      - traefik.http.routers.${CL_HOST:-cl}lb.tls.certresolver=letsencrypt
+      - traefik.http.services.${CL_HOST:-cl}.loadbalancer.server.port=${CL_REST_PORT:-5052}
 volumes:
   nimbus-consensus-data:
   jwtsecret:

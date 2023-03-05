@@ -10,7 +10,7 @@ x-logging: &logging
 services:
   execution:
     restart: "unless-stopped"
-    stop_grace_period: 3m
+    stop_grace_period: 5m
     build:
       context: ./besu
       dockerfile: ${BESU_DOCKERFILE}
@@ -21,8 +21,9 @@ services:
     user: besu
     environment:
       - JAVA_OPTS=${BESU_HEAP:--XX:SoftMaxHeapSize=3g -Xmx5g}
-      - JWT_SECRET=${JWT_SECRET}
+      - JWT_SECRET=${JWT_SECRET:-}
       - EL_EXTRAS=${EL_EXTRAS:-}
+      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
     volumes:
       - besu-eth1-data:/var/lib/besu
       - /etc/localtime:/etc/localtime:ro
@@ -51,6 +52,7 @@ services:
       - ${EL_RPC_PORT:-8545}
       - --rpc-http-cors-origins=*
       - --rpc-http-max-active-connections=65536
+      - --rpc-max-logs-range=65536
       - --rpc-ws-enabled
       - --rpc-ws-api
       - "WEB3,ETH,NET"
@@ -73,9 +75,7 @@ services:
       - 0.0.0.0
       - --metrics-port
       - "6060"
-      - --data-storage-format=BONSAI
-#      - --sync-mode=X_CHECKPOINT
-      - --sync-mode=X_SNAP
+      - --nat-method=DOCKER
 volumes:
   besu-eth1-data:
   jwtsecret:

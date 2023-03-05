@@ -30,8 +30,8 @@ services:
       - MEV_NODE=${MEV_NODE}
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
-      - MALLOC_ARENA_MAX=4
       - CL_EXTRAS=${CL_EXTRAS:-}
+      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
     ports:
       - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
       - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
@@ -112,36 +112,12 @@ services:
     depends_on:
       - consensus
 
-  validator-import:
-    profiles: ["tools"]
-    restart: "no"
-    image: lighthouse:local
-    user: root
-    volumes:
-      - lhvalidator-data:/var/lib/lighthouse
-      - ./.eth/validator_keys:/validator_keys
-      - /etc/localtime:/etc/localtime:ro
-    environment:
-      - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
-      - NETWORK=${NETWORK}
-    entrypoint:
-      - validator-import.sh
-      - lighthouse
-      - account
-      - validator
-      - import
-      - --datadir
-      - /var/lib/lighthouse
-      - --directory
-      - /val_keys
-      - --network
-      - ${NETWORK}
-      - --debug-level=${LOG_LEVEL}
-
   validator-exit:
     profiles: ["tools"]
     restart: "no"
     image: lighthouse:local
+    # Keys have 440 permissions. Root copies and chowns them,
+    # then switches to user lhvalidator
     user: root
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
@@ -170,6 +146,10 @@ services:
     build:
       context: ./vc-utils
     image: vc-utils:local
+    # The API token has 640 permissions. Root copies it,
+    # then switches to the local user's UID or if not provided,
+    # 1000. The UID has to be able to write .eth/validator_keys
+    # for the "keys delete" command.
     user: root
     volumes:
       - lhvalidator-data:/var/lib/lighthouse

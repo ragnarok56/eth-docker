@@ -1,0 +1,7 @@
+
+This system runs an Ethereum node in the ~/eth-docker directory
+
+Get scrolling logs: 'ethd logs -f --tail 50'
+Update the Ethereum clients: 'ethd update'
+See the version of Ethereum clients: 'ethd version'
+Get help: 'ethd'

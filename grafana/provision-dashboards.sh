@@ -3,6 +3,12 @@
 # without deleting the grafana docker volume
 # Expects a full grafana command with parameters as argument(s)
 
+if [ "$(id -u)" = '0' ]; then
+  chown -R grafana:root /var/lib/grafana
+  chown -R grafana:root /etc/grafana
+  exec su-exec grafana "$0" "$@"
+fi
+
 case "$CLIENT" in
   *prysm* )
     #  prysm_metanull
@@ -95,12 +101,19 @@ case "$CLIENT" in
     wget -qcO - $__url | jq 'walk(if . == "${DS_PROMETHEUS}" then "Prometheus" else . end)' >$__file
     ;;&
   * )
+    # Home staking dashboard
+    __revision=$(wget -q -O - https://grafana.com/api/dashboards/17846 | jq .revision)
+    __url="https://grafana.com/api/dashboards/17846/revisions/${__revision}/download"
+    __file='/etc/grafana/provisioning/dashboards/homestaking-dashboard.json'
+    wget -qcO - $__url | jq 'walk(if . == "${DS_PROMETHEUS}" then "Prometheus" else . end)' >$__file
     # Ethereum Metrics Exporter Dashboard
-    __url='https://grafana.com/api/dashboards/16277/revisions/13/download'
+    __revision=$(wget -q -O - https://grafana.com/api/dashboards/16277 | jq .revision)
+    __url="https://grafana.com/api/dashboards/16277/revisions/${__revision}/download"
     __file='/etc/grafana/provisioning/dashboards/ethereum-metrics-exporter-single.json'
-    wget -qcO - $__url | jq 'walk(if . == "${DS_VICTORIAMETRICS}" then "Prometheus" else . end)' >$__file
+    wget -qcO - $__url | jq 'walk(if . == "${DS_PROMETHEUS}" then "Prometheus" else . end)' >$__file
     # cadvisor and node exporter dashboard
-    __url='https://grafana.com/api/dashboards/10619/revisions/1/download'
+    __revision=$(wget -q -O - https://grafana.com/api/dashboards/10619 | jq .revision)
+    __url="https://grafana.com/api/dashboards/10619/revisions/${__revision}/download"
     __file='/etc/grafana/provisioning/dashboards/docker-host-container-overview.json'
     wget -qcO - $__url | jq 'walk(if . == "${DS_PROMETHEUS}" then "Prometheus" else . end)' >$__file
     ;;
