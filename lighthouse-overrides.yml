@@ -20,9 +20,7 @@ services:
       - ${VALIDATOR_METRICS_PORT}
     volumes:
       - /data/eth/${NETWORK}/validator:/var/lib/lighthouse
-  validator-import:
-    volumes:
-      - /data/eth/${NETWORK}/validator:/var/lib/lighthouse
+
   validator-exit:
     volumes:
       - /data/eth/${NETWORK}/validator:/var/lib/lighthouse
