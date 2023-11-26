@@ -1,23 +1,37 @@
-# eth-docker: Docker automation for Ethereum consensus and execution clients.
+# Eth Docker: Docker automation for Ethereum nodes.
 
 [![GitPOAP Badge](https://public-api.gitpoap.io/v1/repo/eth-educators/eth-docker/badge)](https://www.gitpoap.io/gh/eth-educators/eth-docker)
 
-eth-docker, a docker automation project for [Ethereum](https://ethereum.org/en/upgrades/) consensus and execution clients.
+Eth Docker, a simple yet configurable way to run [Ethereum](https://ethereum.org/en/upgrades/) nodes.
 
-### Getting Started
+## Getting Started
 
-Please see the [official documentation](https://eth-docker.net).
+Please see the [official documentation](https://ethdocker.com).
 
-For a quick testnet start, you can install prerequisites and configure eth-docker, as a non-root user:
+For a quick testnet start, you can install prerequisites and configure Eth Docker, as any user not named `root`:
 
 * `cd ~ && git clone https://github.com/eth-educators/eth-docker.git && cd eth-docker`
 * `./ethd install`
 * `./ethd config`
 
+## Support
+
+The #software channel in [ethstaker Discord](https://discord.io/ethstaker) is the place to ask questions about Eth Docker.
+
+## Contributions
+
+Contributions are highly appreciated. We have [GitPOAPs](https://www.gitpoap.io/gh/eth-educators/eth-docker)! To make your life easier,
+please read the [contribution guidelines](CONTRIBUTING.md) so you can run lint checks locally on pre-commit.
+
 ## License
 
-[Apache License v2](https://github.com/eth2-educators/eth-docker/blob/master/LICENSE)
+[Apache License v2](LICENSE)
 
-# Version
+## Version
 
-This is eth-docker v2.2.8.1
+Eth Docker uses a "semver-ish" scheme.
+- First digit, major shifts in how things work. The last one was Ethereum merge. I do not expect another shift that
+large.
+- Second through fourth digit, [semver](https://semver.org/).
+
+This is Eth Docker v2.3.10.0

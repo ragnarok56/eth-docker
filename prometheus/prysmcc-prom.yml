@@ -1,4 +1,0 @@
-  - job_name: 'consensus node'
-    scrape_interval: 5s
-    static_configs:
-      - targets: ['consensus:8008']

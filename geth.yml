@@ -14,8 +14,10 @@ services:
       context: ./geth
       dockerfile: ${GETH_DOCKERFILE}
       args:
-        - BUILD_TARGET=${GETH_SRC_BUILD_TARGET}
-        - DOCKER_TAG=${GETH_DOCKER_TAG}
+        - BUILD_TARGET=${GETH_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+        - SRC_REPO=${GETH_SRC_REPO:-https://github.com/ethereum/go-ethereum}
+        - DOCKER_TAG=${GETH_DOCKER_TAG:-stable}
+        - DOCKER_REPO=${GETH_DOCKER_REPO:-ethereum/client-go}
     stop_grace_period: 5m
     image: geth:local
     user: geth
@@ -24,17 +26,20 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - EL_EXTRAS=${EL_EXTRAS:-}
       - ARCHIVE_NODE=${ARCHIVE_NODE:-}
+      - NETWORK=${NETWORK}
+      - IPV6=${IPV6:-false}
     volumes:
       - geth-eth1-data:/var/lib/goethereum
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/goethereum/ee-secret
     ports:
-      - ${HOST_IP:-0.0.0.0}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/tcp
-      - ${HOST_IP:-0.0.0.0}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/udp
+      - ${HOST_IP:-}${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/tcp
+      - ${HOST_IP:-}${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/udp
     networks:
       default:
         aliases:
           - eth1
+          - ${NETWORK}-execution # This allows multiple Eth Docker stacks all connected to the same central traefik
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -44,8 +49,6 @@ services:
       - 0.0.0.0
       - --http.vhosts=*
       - --http.corsdomain=*
-      - --http.api
-      - web3,eth,net
       - --datadir
       - /var/lib/goethereum
       - --port
@@ -57,9 +60,7 @@ services:
       - 0.0.0.0
       - --ws.port
       - ${EL_WS_PORT:-8546}
-      - --ws.api
-      - web3,eth,net
-      - --${NETWORK}
+      - --ws.origins=*
       - --metrics
       - --metrics.expensive
       - --pprof
@@ -74,6 +75,11 @@ services:
       - --authrpc.vhosts=*
       - --maxpeers
       - ${EL_MAX_PEER_COUNT:-50}
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/debug/metrics/prometheus
+      - metrics.port=6060
+
   set-prune-marker:
     profiles: ["tools"]
     image: alpine:3

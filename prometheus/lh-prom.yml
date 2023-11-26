@@ -1,6 +1,0 @@
-  - job_name: 'nodes'
-    static_configs:
-      - targets: ['consensus:8008']
-  - job_name: 'validator'
-    static_configs:
-      - targets: ['validator:8009']

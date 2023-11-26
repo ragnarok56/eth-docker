@@ -1,10 +1,11 @@
-# Prometheus federation, or other reasons to have prometheus through traefik
+# To be used in conjunction with grafana.yml
+# Please be very cautious, prometheus is not authenticated by default
 version: "3.9"
 services:
-  prometheus:
+  execution:
     labels:
       - traefik.enable=true
-      - traefik.http.routers.prom.entrypoints=web,websecure
-      - traefik.http.routers.prom.rule=Host(`${PROM_HOST}.${DOMAIN}`)
-      - traefik.http.routers.prom.tls.certresolver=letsencrypt
-      - traefik.http.services.prom.loadbalancer.server.port=9090
+      - traefik.http.routers.${PROM_HOST:-prom}.entrypoints=web,websecure
+      - traefik.http.routers.${PROM_HOST:-prom}.rule=Host(`${PROM_HOST:-prom}.${DOMAIN}`)
+      - traefik.http.routers.${PROM_HOST:-prom}.tls.certresolver=letsencrypt
+      - traefik.http.services.${PROM_HOST:-prom}.loadbalancer.server.port=9090

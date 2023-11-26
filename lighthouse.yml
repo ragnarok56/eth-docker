@@ -7,15 +7,21 @@ x-logging: &logging
       max-file: "3"
       tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
+
+x-build: &lh-build
+  context: ./lighthouse
+  dockerfile: ${LH_DOCKERFILE}
+  args:
+    - BUILD_TARGET=${LH_SRC_BUILD_TARGET:-stable}
+    - SRC_REPO=${LH_SRC_REPO:-https://github.com/sigp/lighthouse}
+    - DOCKER_TAG=${LH_DOCKER_TAG:-latest-modern}
+    - DOCKER_REPO=${LH_DOCKER_REPO:-sigp/lighthouse}
+
 services:
   consensus:
     restart: "unless-stopped"
     build:
-      context: ./lighthouse
-      dockerfile: ${LH_DOCKERFILE}
-      args:
-        - BUILD_TARGET=${LH_SRC_BUILD_TARGET}
-        - DOCKER_TAG=${LH_DOCKER_TAG}
+      <<: *lh-build
     image: lighthouse:local
     user: lhconsensus
     stop_grace_period: 1m
@@ -31,10 +37,15 @@ services:
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - CL_EXTRAS=${CL_EXTRAS:-}
-      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
+      - ARCHIVE_NODE=${ARCHIVE_NODE:-false}
+      - IPV6=${IPV6:-false}
+      - CL_P2P_PORT=${CL_P2P_PORT:-9000}
+      - CL_QUIC_PORT=${CL_QUIC_PORT:-9001}
+      - NETWORK=${NETWORK}
     ports:
-      - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
-      - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
+      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
+      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
+      - ${HOST_IP:-}${CL_QUIC_PORT:-9001}:${CL_QUIC_PORT:-9001}/udp
     networks:
       default:
         aliases:
@@ -47,15 +58,18 @@ services:
       - --disable-upnp
       - --datadir
       - /var/lib/lighthouse
-      - --http
+      - --gui
       - --http-address
       - 0.0.0.0
       - --http-port
       - ${CL_REST_PORT:-5052}
-      - --network
-      - ${NETWORK}
+      - --http-allow-origin=*
+      - --listen-address
+      - 0.0.0.0
       - --port
       - ${CL_P2P_PORT:-9000}
+      - --quic-port
+      - ${CL_QUIC_PORT:-9001}
       - --target-peers
       - ${CL_MAX_PEER_COUNT:-80}
       - --execution-endpoint
@@ -66,12 +80,17 @@ services:
       - --metrics
       - --metrics-address
       - 0.0.0.0
-      - --validator-monitor-auto
       - --suggested-fee-recipient
       - ${FEE_RECIPIENT}
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=8008
 
   validator:
     restart: "unless-stopped"
+    build:
+      <<: *lh-build
     image: lighthouse:local
     user: lhvalidator
     environment:
@@ -80,9 +99,16 @@ services:
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - DOPPELGANGER=${DOPPELGANGER}
       - VC_EXTRAS=${VC_EXTRAS:-}
+      - GRAFFITI=${GRAFFITI:-}
+      - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
+      - NETWORK=${NETWORK}
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - /etc/localtime:/etc/localtime:ro
+    networks:
+      default:
+        aliases:
+          - vc
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
@@ -92,10 +118,6 @@ services:
       - /var/lib/lighthouse
       - --beacon-nodes
       - ${CL_NODE:-http://consensus:5052}
-      - --graffiti
-      - ${GRAFFITI}
-      - --network
-      - ${NETWORK}
       - --debug-level=${LOG_LEVEL}
       - --metrics
       - --metrics-address
@@ -111,10 +133,22 @@ services:
       - ${FEE_RECIPIENT}
     depends_on:
       - consensus
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${VC_HOST:-vc}.service=${VC_HOST:-vc}
+      - traefik.http.routers.${VC_HOST:-vc}.entrypoints=websecure
+      - traefik.http.routers.${VC_HOST:-vc}.rule=Host(`${VC_HOST:-vc}.${DOMAIN}`)
+      - traefik.http.routers.${VC_HOST:-vc}.tls.certresolver=letsencrypt
+      - traefik.http.services.${VC_HOST:-vc}.loadbalancer.server.port=${KEY_API_PORT:-7500}
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=8009
 
   validator-exit:
     profiles: ["tools"]
     restart: "no"
+    build:
+      <<: *lh-build
     image: lighthouse:local
     # Keys have 440 permissions. Root copies and chowns them,
     # then switches to user lhvalidator
@@ -154,16 +188,19 @@ services:
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - ./.eth/validator_keys:/validator_keys
+      - ./.eth/exit_messages:/exit_messages
       - /etc/localtime:/etc/localtime:ro
     environment:
       - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
       - KEY_API_PORT=${KEY_API_PORT:-7500}
+      - WEB3SIGNER=${WEB3SIGNER:-false}
+      - CL_NODE=${CL_NODE}
     depends_on:
       - validator
     entrypoint:
       - keymanager.sh
       - /var/lib/lighthouse/validators/api-token.txt
-      - validator
+      - vc
 
 volumes:
   lhbeacon-data:

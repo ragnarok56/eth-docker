@@ -1,0 +1,54 @@
+name: Test Nimbus and Nethermind
+run-name: Test Nimbus and Nethermind
+
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, labeled, unlabeled]
+    branches: [main]
+
+jobs:
+  test-nimbus-nethermind:
+    if: |
+      contains(github.event.pull_request.labels.*.name, 'test-nimbus') ||
+      contains(github.event.pull_request.labels.*.name, 'test-nethermind') ||
+      contains(github.event.pull_request.labels.*.name, 'test-all') ||
+      github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Create .env file
+        run: cp default.env .env
+      - name: Set Nimbus/Nethermind
+        run: |
+          source ./.github/helper.sh
+          COMPOSE_FILE=nimbus.yml:nethermind.yml
+          var=COMPOSE_FILE
+          set_value_in_env
+          FEE_RECIPIENT=0xDccf8451070a86183eE70D330C4c43b686E9CF86
+          var=FEE_RECIPIENT
+          set_value_in_env
+      - name: Start Nimbus/Nethermind
+        run: ./ethd up
+      - name: Pause for 30 seconds
+        run: sleep 30
+      - name: Test Nimbus
+        run: ./.github/check-service.sh consensus
+      - name: Test Nethermind
+        run: ./.github/check-service.sh execution
+      - name: Set Nimbus/Nethermind w/ VC
+        run: |
+          source ./.github/helper.sh
+          COMPOSE_FILE=nimbus-cl-only.yml:nimbus-vc-only.yml:nethermind.yml
+          var=COMPOSE_FILE
+          set_value_in_env
+      - name: Start Nimbus/Nethermind
+        run: ./ethd up
+      - name: Pause for 30 seconds
+        run: sleep 30
+      - name: Test Nimbus CL
+        run: ./.github/check-service.sh consensus
+      - name: Test Nimbus VC
+        run: ./.github/check-service.sh validator
+      - name: Test Nethermind
+        run: ./.github/check-service.sh execution

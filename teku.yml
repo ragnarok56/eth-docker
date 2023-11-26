@@ -7,15 +7,20 @@ x-logging: &logging
       max-file: "3"
       tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
+x-build: &teku-build
+  context: ./teku
+  dockerfile: ${TEKU_DOCKERFILE}
+  args:
+    - BUILD_TARGET=${TEKU_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+    - SRC_REPO=${TEKU_SRC_REPO:-https://github.com/ConsenSys/teku}
+    - DOCKER_TAG=${TEKU_DOCKER_TAG:-latest}
+    - DOCKER_REPO=${TEKU_DOCKER_REPO:-consensys/teku}
+
 services:
   consensus:
     restart: "unless-stopped"
     build:
-      context: ./teku
-      args:
-        - BUILD_TARGET=${TEKU_SRC_BUILD_TARGET}
-        - DOCKER_TAG=${TEKU_DOCKER_TAG}
-      dockerfile: ${TEKU_DOCKERFILE}
+      <<: *teku-build
     image: teku:local
     user: teku
     stop_grace_period: 1m
@@ -24,7 +29,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/teku/ee-secret
     environment:
-      - JAVA_OPTS=${TEKU_HEAP:--XX:SoftMaxHeapSize=2g -Xmx5g}
+      - JAVA_OPTS=${TEKU_HEAP:--Xmx4g}
       - RAPID_SYNC_URL=${RAPID_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
@@ -34,9 +39,15 @@ services:
       - CL_EXTRAS=${CL_EXTRAS:-}
       - VC_EXTRAS=${VC_EXTRAS:-}
       - ARCHIVE_NODE=${ARCHIVE_NODE:-}
+      - DOPPELGANGER=${DOPPELGANGER:-}
+      - GRAFFITI=${GRAFFITI:-}
+      - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
+      - WEB3SIGNER=${WEB3SIGNER:-false}
+      - EMBEDDED_VC=true
+      - NETWORK=${NETWORK}
     ports:
-      - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
-      - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
+      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
+      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
     networks:
       default:
         aliases:
@@ -47,7 +58,6 @@ services:
       - /opt/teku/bin/teku
       - --data-path=/var/lib/teku
       - --log-destination=CONSOLE
-      - --network=${NETWORK}
       - --ee-endpoint=${EL_NODE}
       - --ee-jwt-secret-file
       - /var/lib/teku/ee-secret/jwtsecret
@@ -56,12 +66,12 @@ services:
       - --p2p-peer-upper-bound=${CL_MAX_PEER_COUNT:-100}
       - --p2p-peer-lower-bound=${CL_MIN_PEER_COUNT:-64}
       - --validator-keys=/var/lib/teku/validator-keys:/var/lib/teku/validator-passwords
-      - --validators-graffiti=${GRAFFITI}
       - --logging=${LOG_LEVEL}
       - --rest-api-host-allowlist=*
       - --rest-api-enabled=true
       - --rest-api-interface=0.0.0.0
       - --rest-api-port=${CL_REST_PORT:-5052}
+      - --beacon-liveness-tracking-enabled=true
       - --metrics-enabled=true
       - --metrics-port=8008
       - --metrics-interface=0.0.0.0
@@ -75,10 +85,29 @@ services:
       - --validator-api-keystore-password-file=/var/lib/teku/teku-keyapi.password
       - --validators-proposer-default-fee-recipient=${FEE_RECIPIENT}
       - --validators-keystore-locking-enabled=false
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=8008
+
+  wipe-db:
+    profiles: ["tools"]
+    restart: "no"
+    image: alpine:3
+    user: "10002"
+    volumes:
+      - teku-data:/var/lib/teku
+      - /etc/localtime:/etc/localtime:ro
+    entrypoint: ["/bin/sh","-c"]
+    command:
+      - |
+        rm -rf /var/lib/teku/beacon/*
 
   validator-exit:
     profiles: ["tools"]
     restart: "no"
+    build:
+      <<: *teku-build
     image: teku:local
     user: teku
     volumes:
@@ -102,11 +131,14 @@ services:
     volumes:
       - teku-data:/var/lib/teku
       - ./.eth/validator_keys:/validator_keys
+      - ./.eth/exit_messages:/exit_messages
       - /etc/localtime:/etc/localtime:ro
     environment:
       - TLS="true"
       - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
       - KEY_API_PORT=${KEY_API_PORT:-7500}
+      - WEB3SIGNER=${WEB3SIGNER:-false}
+      - CL_NODE=${CL_NODE}
     depends_on:
       - consensus
     entrypoint:

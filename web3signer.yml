@@ -13,7 +13,8 @@ services:
     build:
       context: ./web3signer
       args:
-        - DOCKER_TAG=${W3S_DOCKER_TAG}
+        - DOCKER_TAG=${W3S_DOCKER_TAG:-latest}
+        - DOCKER_REPO=${W3S_DOCKER_REPO:-consensys/web3signer}
       dockerfile: Dockerfile.binary
     image: web3signer:local
     user: web3signer
@@ -21,7 +22,8 @@ services:
       - web3signer-keys:/var/lib/web3signer
       - /etc/localtime:/etc/localtime:ro
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -37,6 +39,10 @@ services:
       - --slashing-protection-db-username=postgres
       - --slashing-protection-db-password=postgres
       - --slashing-protection-pruning-enabled=true
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=9001
 
   postgres:
     restart: "unless-stopped"
@@ -45,28 +51,13 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=web3signer
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      start_period: 5s
+      interval: 10s
+      timeout: 5s
     volumes:
       - web3signer-slashing-data:/var/lib/postgresql/data/
-
-  validator-keys:
-    profiles: ["tools"]
-    restart: "no"
-    build:
-      context: ./vc-utils
-    image: vc-utils:local
-    user: root
-    volumes:
-      - ./.eth/validator_keys:/validator_keys
-      - /etc/localtime:/etc/localtime:ro
-    environment:
-      - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
-      - KEY_API_PORT=9000
-    depends_on:
-      - web3signer
-    entrypoint:
-      - keymanager.sh
-      - NIL
-      - web3signer
 
 volumes:
   web3signer-keys:

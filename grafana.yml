@@ -13,21 +13,23 @@ services:
     build:
       context: ./prometheus
     image: prometheus:local
+    user: root
     volumes:
       - prom-data:/prometheus
       - /etc/localtime:/etc/localtime:ro
-    environment:
-      - CLIENT=${COMPOSE_FILE}
-    entrypoint: choose-config.sh
-    command: ["/bin/prometheus", "--storage.tsdb.path=/prometheus", "--web.console.libraries=/usr/share/prometheus/console_libraries", "--web.console.templates=/usr/share/prometheus/consoles"]
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./prometheus/conf.d/:/etc/prometheus/conf.d/:ro
+      - ./prometheus/custom-prom.yml:/etc/prometheus/custom-prom.yml:ro
+    command:
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=40d
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
     <<: *logging
-    depends_on:
-      - node-exporter
-      - blackbox-exporter
-      - json-exporter
-      - cryptowat-exporter
-      - cadvisor
-      - ethereum-metrics-exporter
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=9090
 
   ethereum-metrics-exporter:
     restart: "unless-stopped"
@@ -38,11 +40,15 @@ services:
       - CLIENT=${COMPOSE_FILE}
     entrypoint:
       - docker-entrypoint.sh
-      - /exporter
+      - /ethereum-metrics-exporter
     <<: *logging
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=9090
 
   node-exporter:
-    image: quay.io/prometheus/node-exporter:latest
+    image: prom/node-exporter:latest
     command:
       - '--path.rootfs=/host'
       - '--path.procfs=/host/proc'
@@ -59,6 +65,10 @@ services:
       - /sys:/host/sys:ro
       - /etc/localtime:/etc/localtime:ro
     <<: *logging
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=9100
 
   blackbox-exporter:
     restart: "unless-stopped"
@@ -66,35 +76,28 @@ services:
     volumes:
       - ./prometheus/blackbox.yml:/config/blackbox.yml
       - /etc/localtime:/etc/localtime:ro
-    <<: *logging
     command:
       - --config.file=/config/blackbox.yml
+    <<: *logging
 
   json-exporter:
     restart: "unless-stopped"
-    image: quay.io/prometheuscommunity/json-exporter
+    image: prometheuscommunity/json-exporter:latest
     volumes:
       - ./prometheus/json.yml:/config/json.yml
       - /etc/localtime:/etc/localtime:ro
-    <<: *logging
     command:
       - --config.file
       - /config/json.yml
-
-  cryptowat-exporter:
-    restart: "unless-stopped"
-    image: nbarrientos/cryptowat_exporter
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-    environment:
-      - CRYPTOWAT_EXCHANGES=kraken
-      - CRYPTOWAT_PAIRS=ethusd,ethchf
-      - CRYPTOWAT_CACHESECONDS=300
-      - TZ=Europe/Zurich
     <<: *logging
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=7979
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor
+    restart: "unless-stopped"
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /:/rootfs:ro
@@ -105,6 +108,10 @@ services:
       - --docker_only
       - --housekeeping_interval=30s
     <<: *logging
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=8080
 
   promtail:
     image: grafana/promtail:latest
@@ -114,12 +121,18 @@ services:
       - ./promtail:/etc/promtail
       - promtail-data:/tmp
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-    command:
-      - '--config.file=/etc/promtail/promtail.yml'
+    entrypoint: ./etc/promtail/entrypoint.sh
+    command: ["/usr/bin/promtail"]
+    environment:
+      SERVER_LABEL_HOSTNAME: ${LOGS_LABEL:-notset}
     restart: "unless-stopped"
     depends_on:
       - loki
     <<: *logging
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=9080
 
   loki:
     image: grafana/loki:latest
@@ -130,6 +143,10 @@ services:
       - '--config.file=/etc/loki/loki.yml'
     restart: "unless-stopped"
     <<: *logging
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=3100
 
   grafana:
     restart: "unless-stopped"
@@ -145,10 +162,6 @@ services:
       - grafana-data:/var/lib/grafana
       - grafana-config:/etc/grafana
       - /etc/localtime:/etc/localtime:ro
-    depends_on:
-      - prometheus
-      - loki
-      - promtail
     entrypoint: ["provision-dashboards.sh"]
     command: /run.sh
     <<: *logging
@@ -158,6 +171,9 @@ services:
       - traefik.http.routers.grafana.rule=Host(`${GRAFANA_HOST}.${DOMAIN}`)
       - traefik.http.routers.grafana.tls.certresolver=letsencrypt
       - traefik.http.services.grafana.loadbalancer.server.port=${GRAFANA_PORT}
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=3000
 
 volumes:
   grafana-data:

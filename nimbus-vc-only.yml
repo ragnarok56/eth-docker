@@ -7,17 +7,23 @@ x-logging: &logging
       max-file: "3"
       tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
+x-build: &nimbus-build
+  context: ./nimbus
+  dockerfile: ${NIM_DOCKERFILE}
+  args:
+    - BUILD_TARGET=${NIM_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+    - SRC_REPO=${NIM_SRC_REPO:-https://github.com/status-im/nimbus-eth2}
+    - DOCKER_TAG=${NIM_DOCKER_TAG:-multiarch-latest}
+    - DOCKER_VC_TAG=${NIM_DOCKER_VC_TAG:-multiarch-latest}
+    - DOCKER_REPO=${NIM_DOCKER_REPO:-statusim/nimbus-eth2}
+    - DOCKER_VC_REPO=${NIM_DOCKER_VC_REPO:-statusim/nimbus-validator-client}
+
 services:
   validator:
     restart: "unless-stopped"
     build:
       target: validator
-      context: ./nimbus
-      args:
-        - BUILD_TARGET=${NIM_SRC_BUILD_TARGET}
-        - DOCKER_TAG=${NIM_DOCKER_TAG}
-        - DOCKER_VC_TAG=${NIM_DOCKER_VC_TAG}
-      dockerfile: ${NIM_DOCKERFILE}
+      <<: *nimbus-build
     image: nimbus-validator:local
     user: user
     volumes:
@@ -29,6 +35,13 @@ services:
       - DOPPELGANGER=${DOPPELGANGER}
       - LOG_LEVEL=${LOG_LEVEL}
       - VC_EXTRAS=${VC_EXTRAS:-}
+      - GRAFFITI=${GRAFFITI:-}
+      - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
+      - WEB3SIGNER=${WEB3SIGNER:-false}
+    networks:
+      default:
+        aliases:
+          - vc
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
@@ -36,7 +49,6 @@ services:
       - --data-dir=/var/lib/nimbus
       - --non-interactive
       - --beacon-node=${CL_NODE}
-      - --graffiti=${GRAFFITI}
       - --metrics
       - --metrics-port=8009
       - --metrics-address=0.0.0.0
@@ -46,24 +58,19 @@ services:
       - --keymanager-allow-origin=*
       - --keymanager-token-file=/var/lib/nimbus/api-token.txt
       - --suggested-fee-recipient=${FEE_RECIPIENT}
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=8009
 
   validator-exit:
     profiles: ["tools"]
     restart: "no"
-    image: nimbus-validator:local
-    user: user
-    volumes:
-      - nimbus-vc-data:/var/lib/nimbus
-      - /etc/localtime:/etc/localtime:ro
+    image: alpine:3
     entrypoint:
-      - /usr/local/bin/nimbus_beacon_node
-      - --data-dir=/var/lib/nimbus
-      - --network=${NETWORK}
-      - --log-level=${LOG_LEVEL}
-      - deposits
-      - exit
-      - --rest-url=http://consensus:5052
-      - --validator=
+      - /bin/sh
+      - -c
+      - echo "Legacy exit not supported with Nimbus validator client. Please use ./ethd keys sign-exit instead, then submit to beaconcha.in or use ./ethd keys send-exit"
 
   validator-keys:
     profiles: ["tools"]
@@ -75,16 +82,19 @@ services:
     volumes:
       - nimbus-vc-data:/var/lib/nimbus
       - ./.eth/validator_keys:/validator_keys
+      - ./.eth/exit_messages:/exit_messages
       - /etc/localtime:/etc/localtime:ro
     environment:
       - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
       - KEY_API_PORT=${KEY_API_PORT:-7500}
+      - WEB3SIGNER=${WEB3SIGNER:-false}
+      - CL_NODE=${CL_NODE}
     depends_on:
       - validator
     entrypoint:
       - keymanager.sh
       - /var/lib/nimbus/api-token.txt
-      - validator
+      - vc
 
 volumes:
   nimbus-vc-data:

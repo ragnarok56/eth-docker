@@ -16,30 +16,34 @@ services:
       context: ./nethermind
       dockerfile: ${NM_DOCKERFILE}
       args:
-        - BUILD_TARGET=${NM_SRC_BUILD_TARGET}
-        - DOCKER_TAG=${NM_DOCKER_TAG}
+        - BUILD_TARGET=${NM_SRC_BUILD_TARGET:-'$(git tag --sort=-committerdate | grep -E "^[0-9]+[.][0-9]+[.][0-9]+$" | head -1)'}
+        - SRC_REPO=${NM_SRC_REPO:-https://github.com/NethermindEth/nethermind}
+        - DOCKER_TAG=${NM_DOCKER_TAG:-latest}
+        - DOCKER_REPO=${NM_DOCKER_REPO:-nethermind/nethermind}
     image: nethermind:local
     user: nethermind
     environment:
       - JWT_SECRET=${JWT_SECRET}
       - EL_EXTRAS=${EL_EXTRAS:-}
       - ARCHIVE_NODE=${ARCHIVE_NODE:-}
+      - AUTOPRUNE_NM=${AUTOPRUNE_NM:-true}
+      - NETWORK=${NETWORK}
     volumes:
       - nm-eth1-data:/var/lib/nethermind
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/nethermind/ee-secret
     ports:
-      - ${HOST_IP:-0.0.0.0}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/tcp
-      - ${HOST_IP:-0.0.0.0}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/udp
+      - ${HOST_IP:-}${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/tcp
+      - ${HOST_IP:-}${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/udp
     networks:
       default:
         aliases:
           - eth1
+          - ${NETWORK}-execution # This allows multiple Eth Docker stacks all connected to the same central traefik
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
-      - dotnet
-      - /nethermind/Nethermind.Runner.dll
+      - /nethermind/nethermind
       - --datadir
       - /var/lib/nethermind
       - --Init.WebSocketsEnabled
@@ -66,31 +70,22 @@ services:
       - 0.0.0.0
       - --JsonRpc.EnginePort
       - ${EE_PORT:-8551}
-      - --JsonRpc.EnabledModules
-      - "Web3,Eth,Subscribe,Net,Health,Parity,Proof,Trace,TxPool"
       - --JsonRpc.AdditionalRpcUrls=http://127.0.0.1:1337|http|admin
       - --JsonRpc.JwtSecretFile=/var/lib/nethermind/ee-secret/jwtsecret
-# Temporary Prysm workaround. Remove when no longer needed
-      - --JsonRpc.MaxBatchSize
-      - "10000"
       - --Metrics.Enabled
       - "true"
       - --Metrics.PushGatewayUrl
       - ""
       - --Metrics.ExposePort
       - "6060"
-      - --config
-      - ${NETWORK}
-      - --Sync.AncientBodiesBarrier
-      - "1"
-      - --Sync.AncientReceiptsBarrier
-      - "1"
-      - --Pruning.FullPruningMaxDegreeOfParallelism
-      - "2"
       - --Pruning.FullPruningCompletionBehavior
-      - ShutdownOnSuccess
+      - AlwaysShutdown
       - --log
       - ${LOG_LEVEL}
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=6060
 volumes:
   nm-eth1-data:
   jwtsecret:

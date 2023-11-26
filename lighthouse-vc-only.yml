@@ -7,15 +7,20 @@ x-logging: &logging
       max-file: "3"
       tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
+x-build: &lh-build
+  context: ./lighthouse
+  dockerfile: ${LH_DOCKERFILE}
+  args:
+    - BUILD_TARGET=${LH_SRC_BUILD_TARGET:-stable}
+    - SRC_REPO=${LH_SRC_REPO:-https://github.com/sigp/lighthouse}
+    - DOCKER_TAG=${LH_DOCKER_TAG:-latest-modern}
+    - DOCKER_REPO=${LH_DOCKER_REPO:-sigp/lighthouse}
+
 services:
   validator:
     restart: "unless-stopped"
     build:
-      context: ./lighthouse
-      dockerfile: ${LH_DOCKERFILE}
-      args:
-        - BUILD_TARGET=${LH_SRC_BUILD_TARGET}
-        - DOCKER_TAG=${LH_DOCKER_TAG}
+      <<: *lh-build
     image: lighthouse:local
     user: lhvalidator
     environment:
@@ -24,9 +29,16 @@ services:
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - DOPPELGANGER=${DOPPELGANGER}
       - VC_EXTRAS=${VC_EXTRAS:-}
+      - GRAFFITI=${GRAFFITI:-}
+      - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
+      - NETWORK=${NETWORK}
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - /etc/localtime:/etc/localtime:ro
+    networks:
+      default:
+        aliases:
+          - vc
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
@@ -36,10 +48,6 @@ services:
       - /var/lib/lighthouse
       - --beacon-nodes
       - ${CL_NODE:-http://consensus:5052}
-      - --graffiti
-      - ${GRAFFITI}
-      - --network
-      - ${NETWORK}
       - --debug-level=${LOG_LEVEL}
       - --metrics
       - --metrics-address
@@ -53,10 +61,22 @@ services:
       - --unencrypted-http-transport
       - --suggested-fee-recipient
       - ${FEE_RECIPIENT}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${VC_HOST:-vc}.service=${VC_HOST:-vc}
+      - traefik.http.routers.${VC_HOST:-vc}.entrypoints=websecure
+      - traefik.http.routers.${VC_HOST:-vc}.rule=Host(`${VC_HOST:-vc}.${DOMAIN}`)
+      - traefik.http.routers.${VC_HOST:-vc}.tls.certresolver=letsencrypt
+      - traefik.http.services.${VC_HOST:-vc}.loadbalancer.server.port=${KEY_API_PORT:-7500}
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=8009
 
   validator-exit:
     profiles: ["tools"]
     restart: "no"
+    build:
+      <<: *lh-build
     image: lighthouse:local
     user: root
     volumes:
@@ -88,16 +108,19 @@ services:
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - ./.eth/validator_keys:/validator_keys
+      - ./.eth/exit_messages:/exit_messages
       - /etc/localtime:/etc/localtime:ro
     environment:
       - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
       - KEY_API_PORT=${KEY_API_PORT:-7500}
+      - WEB3SIGNER=${WEB3SIGNER:-false}
+      - CL_NODE=${CL_NODE}
     depends_on:
       - validator
     entrypoint:
       - keymanager.sh
       - /var/lib/lighthouse/validators/api-token.txt
-      - validator
+      - vc
 
 volumes:
   lhvalidator-data:

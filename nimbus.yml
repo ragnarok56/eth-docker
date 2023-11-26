@@ -7,17 +7,23 @@ x-logging: &logging
       max-file: "3"
       tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
+x-build: &nimbus-build
+  context: ./nimbus
+  dockerfile: ${NIM_DOCKERFILE}
+  args:
+    - BUILD_TARGET=${NIM_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+    - SRC_REPO=${NIM_SRC_REPO:-https://github.com/status-im/nimbus-eth2}
+    - DOCKER_TAG=${NIM_DOCKER_TAG:-multiarch-latest}
+    - DOCKER_VC_TAG=${NIM_DOCKER_VC_TAG:-multiarch-latest}
+    - DOCKER_REPO=${NIM_DOCKER_REPO:-statusim/nimbus-eth2}
+    - DOCKER_VC_REPO=${NIM_DOCKER_VC_REPO:-statusim/nimbus-validator-client}
+
 services:
   consensus:
     restart: "unless-stopped"
     build:
       target: consensus
-      context: ./nimbus
-      args:
-        - BUILD_TARGET=${NIM_SRC_BUILD_TARGET}
-        - DOCKER_TAG=${NIM_DOCKER_TAG}
-        - DOCKER_VC_TAG=${NIM_DOCKER_VC_TAG}
-      dockerfile: ${NIM_DOCKERFILE}
+      <<: *nimbus-build
     image: nimbus:local
     user: user
     stop_grace_period: 1m
@@ -36,9 +42,13 @@ services:
       - CL_EXTRAS=${CL_EXTRAS:-}
       - VC_EXTRAS=${VC_EXTRAS:-}
       - ARCHIVE_NODE=${ARCHIVE_NODE:-}
+      - GRAFFITI=${GRAFFITI:-}
+      - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
+      - WEB3SIGNER=${WEB3SIGNER:-false}
+      - EMBEDDED_VC=true
     ports:
-      - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
-      - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
+      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
+      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
     networks:
       default:
         aliases:
@@ -53,10 +63,8 @@ services:
       - --tcp-port=${CL_P2P_PORT:-9000}
       - --udp-port=${CL_P2P_PORT:-9000}
       - --max-peers=${CL_MAX_PEER_COUNT:-160}
-      - --network=${NETWORK}
-      - --web3-url=${EL_NODE}
+      - --el=${EL_NODE}
       - --jwt-secret=/var/lib/nimbus/ee-secret/jwtsecret
-      - --graffiti=${GRAFFITI}
       - --rest
       - --rest-address=0.0.0.0
       - --rest-port=${CL_REST_PORT:-5052}
@@ -70,19 +78,39 @@ services:
       - --keymanager-allow-origin=*
       - --keymanager-token-file=/var/lib/nimbus/api-token.txt
       - --suggested-fee-recipient=${FEE_RECIPIENT}
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=8008
+
+  wipe-db:
+    profiles: ["tools"]
+    restart: "no"
+    image: alpine:3
+    user: "10002"
+    volumes:
+      - nimbus-data:/var/lib/nimbus
+      - /etc/localtime:/etc/localtime:ro
+    entrypoint: ["/bin/sh","-c"]
+    command:
+      - |
+        rm -rf /var/lib/nimbus/db/*
+        rm /var/lib/nimbus/setupdone
 
   validator-exit:
     profiles: ["tools"]
     restart: "no"
+    build:
+      target: consensus
+      <<: *nimbus-build
     image: nimbus:local
-    user: user
+    user: root
     volumes:
-      - nimbus-data:/var/lib/nimbus
       - /etc/localtime:/etc/localtime:ro
+      - ./.eth/validator_keys:/validator_keys
     entrypoint:
+      - validator-exit.sh
       - /usr/local/bin/nimbus_beacon_node
-      - --data-dir=/var/lib/nimbus
-      - --network=${NETWORK}
       - --log-level=${LOG_LEVEL}
       - deposits
       - exit
@@ -99,10 +127,13 @@ services:
     volumes:
       - nimbus-data:/var/lib/nimbus
       - ./.eth/validator_keys:/validator_keys
+      - ./.eth/exit_messages:/exit_messages
       - /etc/localtime:/etc/localtime:ro
     environment:
       - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
       - KEY_API_PORT=${KEY_API_PORT:-7500}
+      - WEB3SIGNER=${WEB3SIGNER:-false}
+      - CL_NODE=${CL_NODE}
     depends_on:
       - consensus
     entrypoint:

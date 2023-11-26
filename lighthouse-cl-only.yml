@@ -7,15 +7,20 @@ x-logging: &logging
       max-file: "3"
       tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
+x-build: &lh-build
+  context: ./lighthouse
+  dockerfile: ${LH_DOCKERFILE}
+  args:
+    - BUILD_TARGET=${LH_SRC_BUILD_TARGET:-stable}
+    - SRC_REPO=${LH_SRC_REPO:-https://github.com/sigp/lighthouse}
+    - DOCKER_TAG=${LH_DOCKER_TAG:-latest-modern}
+    - DOCKER_REPO=${LH_DOCKER_REPO:-sigp/lighthouse}
+
 services:
   consensus:
     restart: "unless-stopped"
     build:
-      context: ./lighthouse
-      dockerfile: ${LH_DOCKERFILE}
-      args:
-        - BUILD_TARGET=${LH_SRC_BUILD_TARGET}
-        - DOCKER_TAG=${LH_DOCKER_TAG}
+      <<: *lh-build
     image: lighthouse:local
     user: lhconsensus
     stop_grace_period: 1m
@@ -31,10 +36,15 @@ services:
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - CL_EXTRAS=${CL_EXTRAS:-}
-      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
+      - ARCHIVE_NODE=${ARCHIVE_NODE:-false}
+      - IPV6=${IPV6:-false}
+      - CL_P2P_PORT=${CL_P2P_PORT:-9000}
+      - CL_QUIC_PORT=${CL_QUIC_PORT:-9001}
+      - NETWORK=${NETWORK}
     ports:
-      - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
-      - ${HOST_IP:-0.0.0.0}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
+      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
+      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
+      - ${HOST_IP:-}${CL_QUIC_PORT:-9001}:${CL_QUIC_PORT:-9001}/udp
     networks:
       default:
         aliases:
@@ -47,15 +57,15 @@ services:
       - --disable-upnp
       - --datadir
       - /var/lib/lighthouse
-      - --http
+      - --gui
       - --http-address
       - 0.0.0.0
       - --http-port
       - ${CL_REST_PORT:-5052}
-      - --network
-      - ${NETWORK}
       - --port
       - ${CL_P2P_PORT:-9000}
+      - --quic-port
+      - ${CL_QUIC_PORT:-9001}
       - --target-peers
       - ${CL_MAX_PEER_COUNT:-80}
       - --execution-endpoint
@@ -68,20 +78,13 @@ services:
       - 0.0.0.0
       - --metrics-port
       - "8008"
-      - --validator-monitor-auto
       - --suggested-fee-recipient
       - ${FEE_RECIPIENT}
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.${CL_HOST:-cl}.service=${CL_HOST:-cl}
-      - traefik.http.routers.${CL_HOST:-cl}.entrypoints=websecure
-      - traefik.http.routers.${CL_HOST:-cl}.rule=Host(`${CL_HOST:-cl}.${DOMAIN}`)
-      - traefik.http.routers.${CL_HOST:-cl}.tls.certresolver=letsencrypt
-      - traefik.http.routers.${CL_HOST:-cl}lb.service=${CL_HOST:-cl}
-      - traefik.http.routers.${CL_HOST:-cl}lb.entrypoints=websecure
-      - traefik.http.routers.${CL_HOST:-cl}lb.rule=Host(`${CL_LB:-cl-lb}.${DOMAIN}`)
-      - traefik.http.routers.${CL_HOST:-cl}lb.tls.certresolver=letsencrypt
-      - traefik.http.services.${CL_HOST:-cl}.loadbalancer.server.port=${CL_REST_PORT:-5052}
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=8008
+
 volumes:
   lhconsensus-data:
   jwtsecret:

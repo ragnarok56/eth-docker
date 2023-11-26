@@ -16,7 +16,7 @@ You can use `./ethd keys list` to get a list of your validator public keys that 
 
 On your machine running eth-docker, run `./ethd keys prepare-address-change`.
 
-Under the hood this will run `./ethd cmd run --rm ethdo validator credentials set --prepare-offline --timeout 2m --allow-insecure-connections --connection http://consensus:5052`
+Under the hood this will run `ethdo --connection <FIRST_CL_IN_CL_NODE> --allow-insecure-connections validator credentials set --prepare-offline`
 which creates an `offline-preparation.json` file in `./.eth/ethdo`.
 This file contains a list of all validators currently on the network and is necessary for the offline machine.
 
@@ -56,11 +56,11 @@ You will be prompted to specify the withdrawal address you want your funds to be
 
 **Triple-check the withdrawal address you set here! You can only set this once**
 
-You will then be prompted to provide the mnemonic key of your withdrawal key. This is needed to sign the change withdrawal request.
+You will then be prompted to provide the mnemonic or "seed phrase" of your validator(s). This is needed to sign the change withdrawal request.
+To clarify, this is the mnemonic of the validators' "withdrawal key", which, if you used staking-deposit-cli to make the keys,
+is also the mnemonic of your validator signing keys. It is not the mnemonic of the depositing address, or the withdrawal address.
 
 A file `change-operations.json` will then be created and saved on the Data USB for use with eth-docker and `ethdo` on your online computer.
-
-You will be given the option to create a separate file for each validator if you plan to use [CLWP](https://clwp.xyz). Doing so will create several \<validator-index\>.json files.
 
 Shut down Ubuntu which will make your PC "forget" anything it knew about your mnemonic during this process.
 
@@ -68,9 +68,17 @@ At this point your Live USB will no longer be needed.
 
 ## Broadcast changes to the chain
 
+### Using the beacocha.in explorer
+
+Did I mention to **triple-check the withdrawal address you have set? You can only set this once!**
+
+Go to https://beaconcha.in/tools/broadcast and drag-drop the `change-operations.json` file in. It will be broadcast to the chain.
+
+### Using your own eth-docker CL
+
 Insert the Data USB to your online computer where eth-docker is running.
 
-Copy the `change-operations.json` from the Data USB to `./eth/ethdo` on your eth-docker node.
+Copy the `change-operations.json` from the Data USB to `./.eth/ethdo` on your eth-docker node.
 
 Run `./ethd keys send-address-change`. You will have one more chance to verify your withdrawal address.
 

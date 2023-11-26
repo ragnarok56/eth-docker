@@ -11,9 +11,12 @@ x-build: &prysm-build
   context: ./prysm
   dockerfile: ${PRYSM_DOCKERFILE}
   args:
-    - BUILD_TARGET=${PRYSM_SRC_BUILD_TARGET}
-    - DOCKER_TAG=${PRYSM_DOCKER_TAG}
-    - DOCKER_VC_TAG=${PRYSM_DOCKER_VC_TAG}
+    - BUILD_TARGET=${PRYSM_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+    - SRC_REPO=${PRYSM_SRC_REPO:-https://github.com/prysmaticlabs/prysm}
+    - DOCKER_TAG=${PRYSM_DOCKER_TAG:-stable}
+    - DOCKER_VC_TAG=${PRYSM_DOCKER_VC_TAG:-stable}
+    - DOCKER_REPO=${PRYSM_DOCKER_REPO:-gcr.io/prysmaticlabs/prysm/beacon-chain}
+    - DOCKER_VC_REPO=${PRYSM_DOCKER_VC_REPO:-gcr.io/prysmaticlabs/prysm/validator}
 
 services:
   consensus:
@@ -35,9 +38,10 @@ services:
       - MEV_NODE=${MEV_NODE}
       - CL_EXTRAS=${CL_EXTRAS:-}
       - ARCHIVE_NODE=${ARCHIVE_NODE:-}
+      - NETWORK=${NETWORK}
     ports:
-      - ${HOST_IP:-0.0.0.0}:${PRYSM_PORT}:${PRYSM_PORT}/tcp
-      - ${HOST_IP:-0.0.0.0}:${PRYSM_UDP_PORT}:${PRYSM_UDP_PORT}/udp
+      - ${HOST_IP:-}${PRYSM_PORT}:${PRYSM_PORT}/tcp
+      - ${HOST_IP:-}${PRYSM_UDP_PORT}:${PRYSM_UDP_PORT}/udp
     networks:
       default:
         aliases:
@@ -71,7 +75,6 @@ services:
       - ${CL_MAX_PEER_COUNT:-45}
       - --verbosity
       - ${LOG_LEVEL}
-      - --${NETWORK}
       - --accept-terms-of-use
       - --monitoring-host
       - 0.0.0.0
@@ -80,16 +83,10 @@ services:
       - --suggested-fee-recipient
       - ${FEE_RECIPIENT}
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.${CL_HOST:-cl}.entrypoints=websecure
-      - traefik.http.routers.${CL_HOST:-cl}.rule=Host(`${CL_HOST:-cl}.${DOMAIN}`)
-      - traefik.http.routers.${CL_HOST:-cl}.service=${CL_HOST:-cl}
-      - traefik.http.routers.${CL_HOST:-cl}.tls.certresolver=letsencrypt
-      - traefik.http.routers.${CL_HOST:-cl}lb.service=${CL_HOST:-cl}
-      - traefik.http.routers.${CL_HOST:-cl}lb.entrypoints=websecure
-      - traefik.http.routers.${CL_HOST:-cl}lb.rule=Host(`${CL_LB:-cl-lb}.${DOMAIN}`)
-      - traefik.http.routers.${CL_HOST:-cl}lb.tls.certresolver=letsencrypt
-      - traefik.http.services.${CL_HOST:-cl}.loadbalancer.server.port=${CL_REST_PORT:-5052}
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=8008
+
 volumes:
   prysmconsensus-data:
   jwtsecret:

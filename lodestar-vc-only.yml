@@ -7,23 +7,44 @@ x-logging: &logging
       max-file: "3"
       tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
 
+x-build: &ls-build
+  context: ./lodestar
+  dockerfile: ${LS_DOCKERFILE}
+  args:
+    - BUILD_TARGET=${LS_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+    - SRC_REPO=${LS_SRC_REPO:-https://github.com/ChainSafe/lodestar}
+    - DOCKER_TAG=${LS_DOCKER_TAG:-latest}
+    - DOCKER_REPO=${LS_DOCKER_REPO:-chainsafe/lodestar}
+
 services:
   validator:
     restart: "unless-stopped"
+    build:
+      <<: *ls-build
     image: lodestar:local
     user: lsvalidator
     environment:
       - MEV_BOOST=${MEV_BOOST}
+      - BEACON_STATS_API=${BEACON_STATS_API}
+      - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - DOPPELGANGER=${DOPPELGANGER}
       - VC_EXTRAS=${VC_EXTRAS:-}
+      - GRAFFITI=${GRAFFITI:-}
+      - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
+      - WEB3SIGNER=${WEB3SIGNER}
+      - NETWORK=${NETWORK}
     volumes:
       - lsvalidator-data:/var/lib/lodestar/validators
       - /etc/localtime:/etc/localtime:ro
+    networks:
+      default:
+        aliases:
+          - vc
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
       - node
-      - --max-old-space-size=4096
+      - --max-old-space-size=2048
       - /usr/app/node_modules/.bin/lodestar
       - validator
       - --dataDir
@@ -41,18 +62,21 @@ services:
       - "8009"
       - --metrics.address
       - 0.0.0.0
-      - --graffiti
-      - ${GRAFFITI}
       - --logLevel
       - ${LOG_LEVEL}
-      - --network
-      - ${NETWORK}
       - --suggestedFeeRecipient
       - ${FEE_RECIPIENT}
+      - --force
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=8009
 
   validator-exit:
     profiles: ["tools"]
     restart: "no"
+    build:
+      <<: *ls-build
     image: lodestar:local
     user: lsvalidator
     volumes:
@@ -60,7 +84,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - node
-      - --max-old-space-size=4096
+      - --max-old-space-size=2048
       - /usr/app/node_modules/.bin/lodestar
       - validator
       - voluntary-exit
@@ -72,6 +96,7 @@ services:
       - ${LOG_LEVEL}
       - --network
       - ${NETWORK}
+      - --force
 
   validator-keys:
     profiles: ["tools"]
@@ -83,16 +108,19 @@ services:
     volumes:
       - lsvalidator-data:/var/lib/lodestar/validators
       - ./.eth/validator_keys:/validator_keys
+      - ./.eth/exit_messages:/exit_messages
       - /etc/localtime:/etc/localtime:ro
     environment:
       - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
       - KEY_API_PORT=${KEY_API_PORT:-7500}
+      - WEB3SIGNER=${WEB3SIGNER:-false}
+      - CL_NODE=${CL_NODE}
     depends_on:
       - validator
     entrypoint:
       - keymanager.sh
       - /var/lib/lodestar/validators/validator-db/api-token.txt
-      - validator
+      - vc
 
 volumes:
   lsvalidator-data:

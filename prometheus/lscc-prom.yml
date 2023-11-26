@@ -1,3 +1,0 @@
-  - job_name: 'beacon'
-    static_configs:
-      - targets: ['consensus:8008']
