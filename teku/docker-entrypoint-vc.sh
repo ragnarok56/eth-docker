@@ -57,7 +57,7 @@ fi
 
 # Check whether we should use MEV Boost
 if [ "${MEV_BOOST}" = "true" ]; then
-  __mev_boost="--validators-builder-registration-default-enabled"
+  __mev_boost="--validators-builder-registration-default-enabled --validators-proposer-blinded-blocks-enabled"
   echo "MEV Boost enabled"
 else
   __mev_boost=""
@@ -79,12 +79,19 @@ else
   __w3s_url=""
 fi
 
+# Distributed attestation aggregation
+if [ "${ENABLE_DIST_ATTESTATION_AGGR}" =  "true" ]; then
+  __att_aggr="--Xobol-dvt-integration-enabled=true"
+else
+  __att_aggr=""
+fi
+
 if [ "${DEFAULT_GRAFFITI}" = "true" ]; then
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__doppel} ${VC_EXTRAS}
+  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__doppel} ${__att_aggr} ${VC_EXTRAS}
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} "--validators-graffiti=${GRAFFITI}" ${__w3s_url} ${__mev_boost} ${__doppel} ${VC_EXTRAS}
+  exec "$@" ${__network} "--validators-graffiti=${GRAFFITI}" ${__w3s_url} ${__mev_boost} ${__doppel} ${__att_aggr} ${VC_EXTRAS}
 fi

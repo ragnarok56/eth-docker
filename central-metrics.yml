@@ -1,6 +1,4 @@
 # For scraping with central-proxy-docker, when all you want is the metrics exporter
-
-version: "3.9"
 x-logging: &logging
   logging:
     driver: json-file
@@ -12,16 +10,15 @@ x-logging: &logging
 services:
   ethereum-metrics-exporter:
     restart: "unless-stopped"
-    build:
-      context: ./eth-metrics
-    image: ethereum-metrics-exporter:local
-    environment:
-      - CLIENT=${COMPOSE_FILE}
+    image: samcm/ethereum-metrics-exporter:0.24.0-debian
     entrypoint:
-      - docker-entrypoint.sh
       - /ethereum-metrics-exporter
+      - --consensus-url=${CL_NODE}
+      - --execution-url=http://execution:${EL_RPC_PORT:-8545}
+    <<: *logging
     labels:
       - metrics.scrape=true
       - metrics.path=/metrics
       - metrics.port=9090
-    <<: *logging
+      - metrics.instance=ethereum-metrics-exporter
+      - metrics.network=${NETWORK}

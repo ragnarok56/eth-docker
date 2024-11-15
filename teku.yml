@@ -1,4 +1,3 @@
-version: "3.9"
 x-logging: &logging
   logging:
     driver: json-file
@@ -22,14 +21,15 @@ services:
     build:
       <<: *teku-build
     image: teku:local
+    pull_policy: never
     user: teku
     stop_grace_period: 1m
     volumes:
-      - teku-data:/var/lib/teku
+      - tekuconsensus-data:/var/lib/teku
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/teku/ee-secret
     environment:
-      - JAVA_OPTS=${TEKU_HEAP:--Xmx4g}
+      - JAVA_OPTS=${TEKU_HEAP:--Xmx7g}
       - RAPID_SYNC_URL=${RAPID_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
@@ -37,21 +37,26 @@ services:
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - CL_EXTRAS=${CL_EXTRAS:-}
-      - VC_EXTRAS=${VC_EXTRAS:-}
+      - VC_EXTRAS=
+      - DOPPELGANGER=false
       - ARCHIVE_NODE=${ARCHIVE_NODE:-}
-      - DOPPELGANGER=${DOPPELGANGER:-}
       - GRAFFITI=${GRAFFITI:-}
-      - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
-      - WEB3SIGNER=${WEB3SIGNER:-false}
-      - EMBEDDED_VC=true
+      - DEFAULT_GRAFFITI=true
+      - WEB3SIGNER=false
+      - EMBEDDED_VC=false
       - NETWORK=${NETWORK}
+      - IPV6=${IPV6:-false}
+      - CL_IPV6_P2P_PORT=${CL_IPV6_P2P_PORT:-9090}
     ports:
-      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
-      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
+      - ${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
+      - ${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
+      - ${HOST_IP:-}:${CL_IPV6_P2P_PORT:-9090}:${CL_IPV6_P2P_PORT:-9090}/tcp
+      - ${HOST_IP:-}:${CL_IPV6_P2P_PORT:-9090}:${CL_IPV6_P2P_PORT:-9090}/udp
     networks:
       default:
         aliases:
           - eth2
+          - ${NETWORK}-consensus
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -65,7 +70,6 @@ services:
       - --p2p-port=${CL_P2P_PORT:-9000}
       - --p2p-peer-upper-bound=${CL_MAX_PEER_COUNT:-100}
       - --p2p-peer-lower-bound=${CL_MIN_PEER_COUNT:-64}
-      - --validator-keys=/var/lib/teku/validator-keys:/var/lib/teku/validator-passwords
       - --logging=${LOG_LEVEL}
       - --rest-api-host-allowlist=*
       - --rest-api-enabled=true
@@ -76,6 +80,48 @@ services:
       - --metrics-port=8008
       - --metrics-interface=0.0.0.0
       - --metrics-host-allowlist=*
+      - --validators-proposer-default-fee-recipient=${FEE_RECIPIENT}
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=8008
+      - metrics.instance=consensus
+      - metrics.network=${NETWORK}
+
+  validator:
+    restart: "unless-stopped"
+    build:
+      <<: *teku-build
+    image: teku:local
+    pull_policy: never
+    user: teku
+    volumes:
+      - teku-vc-data:/var/lib/teku
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - JAVA_OPTS=${TEKU_HEAP:--Xmx2g}
+      - MEV_BOOST=${MEV_BOOST}
+      - VC_EXTRAS=${VC_EXTRAS:-}
+      - DOPPELGANGER=${DOPPELGANGER:-}
+      - GRAFFITI=${GRAFFITI:-}
+      - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
+      - WEB3SIGNER=${WEB3SIGNER:-false}
+      - NETWORK=${NETWORK}
+      - ENABLE_DIST_ATTESTATION_AGGR=${ENABLE_DIST_ATTESTATION_AGGR:-false}
+    networks:
+      default:
+        aliases:
+          - vc
+    <<: *logging
+    entrypoint:
+      - docker-entrypoint-vc.sh
+      - /opt/teku/bin/teku
+      - validator-client
+      - --beacon-node-api-endpoints=${CL_NODE:-http://consensus:5052}
+      - --data-path=/var/lib/teku
+      - --log-destination=CONSOLE
+      - --validator-keys=/var/lib/teku/validator-keys:/var/lib/teku/validator-passwords
+      - --validators-early-attestations-enabled=false
       - --validator-api-enabled=true
       - --validator-api-interface=0.0.0.0
       - --validator-api-port=${KEY_API_PORT:-7500}
@@ -85,23 +131,16 @@ services:
       - --validator-api-keystore-password-file=/var/lib/teku/teku-keyapi.password
       - --validators-proposer-default-fee-recipient=${FEE_RECIPIENT}
       - --validators-keystore-locking-enabled=false
+      - --metrics-enabled=true
+      - --metrics-port=8009
+      - --metrics-interface=0.0.0.0
+      - --metrics-host-allowlist=*
     labels:
       - metrics.scrape=true
       - metrics.path=/metrics
-      - metrics.port=8008
-
-  wipe-db:
-    profiles: ["tools"]
-    restart: "no"
-    image: alpine:3
-    user: "10002"
-    volumes:
-      - teku-data:/var/lib/teku
-      - /etc/localtime:/etc/localtime:ro
-    entrypoint: ["/bin/sh","-c"]
-    command:
-      - |
-        rm -rf /var/lib/teku/beacon/*
+      - metrics.port=8009
+      - metrics.instance=validator
+      - metrics.network=${NETWORK}
 
   validator-exit:
     profiles: ["tools"]
@@ -109,17 +148,17 @@ services:
     build:
       <<: *teku-build
     image: teku:local
+    pull_policy: never
     user: teku
     volumes:
-      - teku-data:/var/lib/teku
+      - teku-vc-data:/var/lib/teku
       - /etc/localtime:/etc/localtime:ro
     entrypoint:
       - /opt/teku/bin/teku
       - voluntary-exit
-      - --beacon-node-api-endpoint=http://consensus:5052
+      - --beacon-node-api-endpoint=${CL_NODE:-http://consensus:5052}
       - --validator-keys=/var/lib/teku/validator-keys:/var/lib/teku/validator-passwords
       - --validator-keys=/var/lib/teku/validator/key-manager/local:/var/lib/teku/validator/key-manager/local-passwords
-      - --include-keymanager-keys=true
 
   validator-keys:
     profiles: ["tools"]
@@ -127,9 +166,10 @@ services:
     build:
       context: ./vc-utils
     image: vc-utils:local
+    pull_policy: never
     user: root
     volumes:
-      - teku-data:/var/lib/teku
+      - teku-vc-data:/var/lib/teku
       - ./.eth/validator_keys:/validator_keys
       - ./.eth/exit_messages:/exit_messages
       - /etc/localtime:/etc/localtime:ro
@@ -140,12 +180,17 @@ services:
       - WEB3SIGNER=${WEB3SIGNER:-false}
       - CL_NODE=${CL_NODE}
     depends_on:
-      - consensus
+      - validator
     entrypoint:
       - keymanager.sh
       - /var/lib/teku/validator/key-manager/validator-api-bearer
-      - consensus
+      - vc
 
 volumes:
-  teku-data:
+  tekuconsensus-data:
+  teku-vc-data:
   jwtsecret:
+
+networks:
+  default:
+    enable_ipv6: ${IPV6:-false}

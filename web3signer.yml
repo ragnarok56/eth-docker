@@ -1,4 +1,3 @@
-version: "3.9"
 x-logging: &logging
   logging:
     driver: json-file
@@ -17,6 +16,7 @@ services:
         - DOCKER_REPO=${W3S_DOCKER_REPO:-consensys/web3signer}
       dockerfile: Dockerfile.binary
     image: web3signer:local
+    pull_policy: never
     user: web3signer
     volumes:
       - web3signer-keys:/var/lib/web3signer
@@ -32,6 +32,7 @@ services:
       - --metrics-enabled
       - --metrics-host-allowlist=*
       - --http-host-allowlist=*
+      - --logging=${LOG_LEVEL:-info}
       - eth2
       - --network=${NETWORK}
       - --enable-key-manager-api=true
@@ -43,6 +44,8 @@ services:
       - metrics.scrape=true
       - metrics.path=/metrics
       - metrics.port=9001
+      - metrics.instance=web3signer
+      - metrics.network=${NETWORK}
 
   postgres:
     restart: "unless-stopped"

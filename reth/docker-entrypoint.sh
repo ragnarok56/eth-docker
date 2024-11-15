@@ -19,7 +19,7 @@ if [[ ! -f /var/lib/reth/ee-secret/jwtsecret ]]; then
 fi
 
 if [[ -O "/var/lib/reth/ee-secret" ]]; then
-  # In case someone specificies JWT_SECRET but it's not a distributed setup
+  # In case someone specifies JWT_SECRET but it's not a distributed setup
   chmod 777 /var/lib/reth/ee-secret
 fi
 if [[ -O "/var/lib/reth/ee-secret/jwtsecret" ]]; then
@@ -74,13 +74,50 @@ case ${LOG_LEVEL} in
     ;;
 esac
 
-if [ "${ARCHIVE_NODE}" = "true" ]; then
-  echo "Reth archive node without pruning"
-  __prune=""
-else
-  __prune="--full"
+__static=""
+if [ -n "${STATIC_DIR}" ] && [ ! "${STATIC_DIR}" = ".nada" ]; then
+  echo "Using separate static files directory at ${STATIC_DIR}."
+  __static="--datadir.static-files /var/lib/static"
 fi
 
+if [ "${ARCHIVE_NODE}" = "true" ]; then
+  echo "Reth archive node without pruning"
+else
+  if [ ! -f "/var/lib/reth/reth.toml" ]; then  # Configure ssv, rocketpool, stakewise contracts
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-exec "$@" ${__network} ${__verbosity} ${__prune} ${EL_EXTRAS}
+    reth init ${__network} --datadir /var/lib/reth ${__static}
+    cat <<EOF >> /var/lib/reth/reth.toml
+
+[prune]
+block_interval = 5
+
+[prune.segments]
+sender_recovery = "full"
+
+[prune.segments.receipts]
+before = 0
+
+[prune.segments.account_history]
+distance = 10064
+
+[prune.segments.storage_history]
+distance = 10064
+EOF
+  fi
+fi
+
+if [ -f /var/lib/reth/prune-marker ]; then
+  rm -f /var/lib/reth/prune-marker
+  if [ "${ARCHIVE_NODE}" = "true" ]; then
+    echo "Reth is an archive node. Not attempting to prune database: Aborting."
+    exit 1
+  fi
+# Word splitting is desired for the command line parameters
+# shellcheck disable=SC2086
+  exec reth prune ${__network} --datadir /var/lib/reth ${__static}
+else
+# Word splitting is desired for the command line parameters
+# shellcheck disable=SC2086
+  exec "$@" ${__network} ${__verbosity} ${__static} ${EL_EXTRAS}
+fi

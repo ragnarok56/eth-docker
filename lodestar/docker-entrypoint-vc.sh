@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 if [ "$(id -u)" = '0' ]; then
   chown -R lsvalidator:lsvalidator /var/lib/lodestar
-  exec su-exec lsvalidator docker-entrypoint.sh "$@"
+  exec gosu lsvalidator docker-entrypoint.sh "$@"
 fi
 
 if [[ "${NETWORK}" =~ ^https?:// ]]; then
@@ -60,12 +60,19 @@ else
   __w3s_url=""
 fi
 
+# Distributed attestation aggregation
+if [ "${ENABLE_DIST_ATTESTATION_AGGR}" =  "true" ]; then
+  __att_aggr="--distributed"
+else
+  __att_aggr=""
+fi
+
 if [ "${DEFAULT_GRAFFITI}" = "true" ]; then
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__mev_boost} ${__beacon_stats} ${__doppel} ${__w3s_url} ${VC_EXTRAS}
+  exec "$@" ${__network} ${__mev_boost} ${__beacon_stats} ${__doppel} ${__w3s_url} ${__att_aggr} ${VC_EXTRAS}
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} "--graffiti" "${GRAFFITI}" ${__mev_boost} ${__beacon_stats} ${__doppel} ${__w3s_url} ${VC_EXTRAS}
+  exec "$@" ${__network} "--graffiti" "${GRAFFITI}" ${__mev_boost} ${__beacon_stats} ${__doppel} ${__w3s_url} ${__att_aggr} ${VC_EXTRAS}
 fi

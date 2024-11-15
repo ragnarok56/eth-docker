@@ -1,4 +1,3 @@
-version: "3.9"
 x-logging: &logging
   logging:
     driver: json-file
@@ -25,6 +24,7 @@ services:
       target: validator
       <<: *prysm-build
     image: prysm-validator:local
+    pull_policy: never
     user: prysmvalidator
     volumes:
       - prysmvalidator-data:/var/lib/prysm
@@ -37,6 +37,7 @@ services:
       - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
       - WEB3SIGNER=${WEB3SIGNER:-false}
       - NETWORK=${NETWORK}
+      - ENABLE_DIST_ATTESTATION_AGGR=${ENABLE_DIST_ATTESTATION_AGGR:-false}
     networks:
       default:
         aliases:
@@ -49,8 +50,10 @@ services:
       - /var/lib/prysm
       - --wallet-dir
       - /var/lib/prysm/
+      - --keymanager-token-file
+      - /var/lib/prysm/auth-token
       - --beacon-rpc-provider
-      - ${CL_NODE:-http://consensus:4000}
+      - ${CL_NODE:-consensus:4000}
       - --verbosity
       - ${LOG_LEVEL}
       - --accept-terms-of-use
@@ -59,13 +62,11 @@ services:
       - --monitoring-port
       - "8009"
       - --web
-      - --grpc-gateway-host
+      - --http-host
       - 0.0.0.0
-      - --grpc-gateway-port
+      - --http-port
       - ${KEY_API_PORT:-7500}
-      - --grpc-gateway-corsdomain=*
-      - --beacon-rpc-gateway-provider
-      - consensus:5052
+      - --http-cors-domain=*
       - --suggested-fee-recipient
       - ${FEE_RECIPIENT}
       - --wallet-password-file
@@ -79,6 +80,8 @@ services:
       - metrics.scrape=true
       - metrics.path=/metrics
       - metrics.port=8009
+      - metrics.instance=validator
+      - metrics.network=${NETWORK}
 
   create-wallet:
     profiles: ["tools"]
@@ -87,6 +90,7 @@ services:
       target: validator
       <<: *prysm-build
     image: prysm-validator:local
+    pull_policy: never
     user: prysmvalidator
     environment:
       - NETWORK=${NETWORK}
@@ -108,7 +112,7 @@ services:
       - validator
       - exit
       - --wallet-dir=/var/lib/prysm/
-      - --beacon-rpc-provider=${CL_NODE:-http://consensus:4000}
+      - --beacon-rpc-provider=${CL_NODE:-consensus:4000}
       - --wallet-password-file=/var/lib/prysm/password.txt
       - --${NETWORK}
 
@@ -119,6 +123,7 @@ services:
       target: validator
       <<: *prysm-build
     image: prysm-validator:local
+    pull_policy: never
     user: root
     volumes:
       - prysmvalidator-data:/var/lib/prysm
@@ -144,6 +149,7 @@ services:
     build:
       context: ./vc-utils
     image: vc-utils:local
+    pull_policy: never
     user: root
     volumes:
       - prysmvalidator-data:/var/lib/prysm
@@ -166,3 +172,7 @@ services:
 volumes:
   prysmvalidator-data:
   jwtsecret:
+
+networks:
+  default:
+    enable_ipv6: ${IPV6:-false}

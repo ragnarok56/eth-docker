@@ -1,4 +1,3 @@
-version: "3.9"
 x-logging: &logging
   logging:
     driver: json-file
@@ -20,6 +19,7 @@ services:
         - DOCKER_REPO=${GETH_DOCKER_REPO:-ethereum/client-go}
     stop_grace_period: 5m
     image: geth:local
+    pull_policy: never
     user: geth
     environment:
       - JWT_SECRET=${JWT_SECRET:-}
@@ -28,13 +28,16 @@ services:
       - ARCHIVE_NODE=${ARCHIVE_NODE:-}
       - NETWORK=${NETWORK}
       - IPV6=${IPV6:-false}
+      - ANCIENT_DIR=${ANCIENT_DIR:-}
     volumes:
       - geth-eth1-data:/var/lib/goethereum
+      - geth-el-data:/var/lib/geth
+      - ${ANCIENT_DIR:-.nada}:/var/lib/ancient
       - /etc/localtime:/etc/localtime:ro
-      - jwtsecret:/var/lib/goethereum/ee-secret
+      - jwtsecret:/var/lib/geth/ee-secret
     ports:
-      - ${HOST_IP:-}${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/tcp
-      - ${HOST_IP:-}${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/udp
+      - ${HOST_IP:-}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/tcp
+      - ${HOST_IP:-}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/udp
     networks:
       default:
         aliases:
@@ -49,8 +52,6 @@ services:
       - 0.0.0.0
       - --http.vhosts=*
       - --http.corsdomain=*
-      - --datadir
-      - /var/lib/goethereum
       - --port
       - ${EL_P2P_PORT:-30303}
       - --http.port
@@ -62,12 +63,11 @@ services:
       - ${EL_WS_PORT:-8546}
       - --ws.origins=*
       - --metrics
-      - --metrics.expensive
       - --pprof
       - --pprof.addr
       - 0.0.0.0
       - --authrpc.jwtsecret
-      - /var/lib/goethereum/ee-secret/jwtsecret
+      - /var/lib/geth/ee-secret/jwtsecret
       - --authrpc.addr
       - 0.0.0.0
       - --authrpc.port
@@ -79,16 +79,14 @@ services:
       - metrics.scrape=true
       - metrics.path=/debug/metrics/prometheus
       - metrics.port=6060
+      - metrics.instance=execution
+      - metrics.network=${NETWORK}
 
-  set-prune-marker:
-    profiles: ["tools"]
-    image: alpine:3
-    user: "10001:10001"
-    restart: "no"
-    volumes:
-      - geth-eth1-data:/var/lib/goethereum
-    entrypoint: ["/bin/sh","-c"]
-    command: /bin/sh
 volumes:
+  geth-el-data:
   geth-eth1-data:
   jwtsecret:
+
+networks:
+  default:
+    enable_ipv6: ${IPV6:-false}

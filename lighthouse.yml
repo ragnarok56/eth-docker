@@ -1,4 +1,3 @@
-version: "3.9"
 x-logging: &logging
   logging:
     driver: json-file
@@ -23,10 +22,12 @@ services:
     build:
       <<: *lh-build
     image: lighthouse:local
+    pull_policy: never
     user: lhconsensus
     stop_grace_period: 1m
     volumes:
-      - lhbeacon-data:/var/lib/lighthouse
+      - lhbeacon-data:/var/lib/lighthouse-og
+      - lhconsensus-data:/var/lib/lighthouse
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/lighthouse/beacon/ee-secret
     environment:
@@ -43,13 +44,14 @@ services:
       - CL_QUIC_PORT=${CL_QUIC_PORT:-9001}
       - NETWORK=${NETWORK}
     ports:
-      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
-      - ${HOST_IP:-}${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
-      - ${HOST_IP:-}${CL_QUIC_PORT:-9001}:${CL_QUIC_PORT:-9001}/udp
+      - ${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
+      - ${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
+      - ${HOST_IP:-}:${CL_QUIC_PORT:-9001}:${CL_QUIC_PORT:-9001}/udp
     networks:
       default:
         aliases:
           - eth2
+          - ${NETWORK}-consensus
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -71,7 +73,7 @@ services:
       - --quic-port
       - ${CL_QUIC_PORT:-9001}
       - --target-peers
-      - ${CL_MAX_PEER_COUNT:-80}
+      - ${CL_MAX_PEER_COUNT:-100}
       - --execution-endpoint
       - ${EL_NODE}
       - --execution-jwt
@@ -86,12 +88,15 @@ services:
       - metrics.scrape=true
       - metrics.path=/metrics
       - metrics.port=8008
+      - metrics.instance=consensus
+      - metrics.network=${NETWORK}
 
   validator:
     restart: "unless-stopped"
     build:
       <<: *lh-build
     image: lighthouse:local
+    pull_policy: never
     user: lhvalidator
     environment:
       - MEV_BOOST=${MEV_BOOST}
@@ -102,6 +107,7 @@ services:
       - GRAFFITI=${GRAFFITI:-}
       - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
       - NETWORK=${NETWORK}
+      - ENABLE_DIST_ATTESTATION_AGGR=${ENABLE_DIST_ATTESTATION_AGGR:-false}
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - /etc/localtime:/etc/localtime:ro
@@ -118,6 +124,9 @@ services:
       - /var/lib/lighthouse
       - --beacon-nodes
       - ${CL_NODE:-http://consensus:5052}
+      - --broadcast
+      - attestations,sync-committee,blocks,subscriptions
+      - --produce-block-v3
       - --debug-level=${LOG_LEVEL}
       - --metrics
       - --metrics-address
@@ -143,6 +152,8 @@ services:
       - metrics.scrape=true
       - metrics.path=/metrics
       - metrics.port=8009
+      - metrics.instance=validator
+      - metrics.network=${NETWORK}
 
   validator-exit:
     profiles: ["tools"]
@@ -150,6 +161,7 @@ services:
     build:
       <<: *lh-build
     image: lighthouse:local
+    pull_policy: never
     # Keys have 440 permissions. Root copies and chowns them,
     # then switches to user lhvalidator
     user: root
@@ -180,6 +192,7 @@ services:
     build:
       context: ./vc-utils
     image: vc-utils:local
+    pull_policy: never
     # The API token has 640 permissions. Root copies it,
     # then switches to the local user's UID or if not provided,
     # 1000. The UID has to be able to write .eth/validator_keys
@@ -202,7 +215,22 @@ services:
       - /var/lib/lighthouse/validators/api-token.txt
       - vc
 
+  set-cl-prune-marker:
+    profiles: ["tools"]
+    image: alpine:3
+    user: "10002:10002"
+    restart: "no"
+    volumes:
+      - lhconsensus-data:/var/lib/lighthouse
+    entrypoint: ["/bin/sh","-c"]
+    command: /bin/sh
+
 volumes:
   lhbeacon-data:
+  lhconsensus-data:
   lhvalidator-data:
   jwtsecret:
+
+networks:
+  default:
+    enable_ipv6: ${IPV6:-false}

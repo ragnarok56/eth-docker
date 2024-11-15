@@ -24,7 +24,7 @@ if [[ ! -f /var/lib/nethermind/ee-secret/jwtsecret ]]; then
 fi
 
 if [[ -O "/var/lib/nethermind/ee-secret" ]]; then
-  # In case someone specificies JWT_SECRET but it's not a distributed setup
+  # In case someone specifies JWT_SECRET but it's not a distributed setup
   chmod 777 /var/lib/nethermind/ee-secret
 fi
 if [[ -O "/var/lib/nethermind/ee-secret/jwtsecret" ]]; then
@@ -53,18 +53,13 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
   __network="--config none.cfg --Init.ChainSpecPath=/var/lib/nethermind/testnet/${config_dir}/chainspec.json --Discovery.Bootnodes=${bootnodes} \
 --JsonRpc.EnabledModules=Eth,Subscribe,Trace,TxPool,Web3,Personal,Proof,Net,Parity,Health,Rpc,Debug,Admin --Pruning.Mode=None --Init.IsMining=false"
 else
-  __network="--config ${NETWORK} --JsonRpc.EnabledModules Web3,Eth,Subscribe,Net,Health,Parity,Proof,Trace,TxPool"
+  __network="--config ${NETWORK}"
 fi
 
 __memtotal=$(awk '/MemTotal/ {printf "%d", int($2/1024/1024)}' /proc/meminfo)
 if [ "${ARCHIVE_NODE}" = "true" ]; then
   echo "Nethermind archive node without pruning"
   __prune="--Sync.DownloadBodiesInFastSync=false --Sync.DownloadReceiptsInFastSync=false --Sync.FastSync=false --Sync.SnapSync=false --Sync.FastBlocks=false --Pruning.Mode=None --Sync.PivotNumber=0"
-  if [ "${__memtotal}" -gt 62 ]; then
-    __memhint="--Init.MemoryHint=4096000000"
-  else
-    __memhint="--Init.MemoryHint=1024000000"
-  fi
 else
   __parallel=$(($(nproc)/4))
   if [ "${__parallel}" -lt 2 ]; then
@@ -72,21 +67,27 @@ else
   fi
   __prune="--Pruning.FullPruningMaxDegreeOfParallelism=${__parallel}"
   if [ "${AUTOPRUNE_NM}" = true ]; then
-    __prune="${__prune} --Pruning.FullPruningTrigger=VolumeFreeSpace --Pruning.FullPruningThresholdMb=375810"
+    __prune="${__prune} --Pruning.FullPruningTrigger=VolumeFreeSpace"
+    if [ "${NETWORK}" = "mainnet" ] || [ "${NETWORK}" = "gnosis" ]; then
+      __prune="${__prune} --Pruning.FullPruningThresholdMb=375810"
+    else
+      __prune="${__prune} --Pruning.FullPruningThresholdMb=51200"
+    fi
   fi
-  if [ "${__memtotal}" -gt 30 ]; then
-    __prune="${__prune} --Pruning.FullPruningMemoryBudgetMb=16384"
-    __memhint=""
-  elif [ "${__memtotal}" -gt 14 ]; then
-    __prune="${__prune} --Pruning.FullPruningMemoryBudgetMb=4096"
-    __memhint="--Init.MemoryHint=1024000000"
-  else
-    __memhint="--Init.MemoryHint=1024000000"
+  if [ "${__memtotal}" -ge 30 ]; then
+    __prune="${__prune} --Pruning.FullPruningMemoryBudgetMb=16384 --Init.StateDbKeyScheme=HalfPath"
   fi
   echo "Using pruning parameters:"
   echo "${__prune}"
 fi
 
+# New or old datadir
+if [ -d /var/lib/nethermind-og/nethermind_db ]; then
+  __datadir="--datadir /var/lib/nethermind-og"
+else
+  __datadir="--datadir /var/lib/nethermind"
+fi
+
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-exec "$@" ${__network} ${__memhint} ${__prune} ${EL_EXTRAS}
+exec "$@" ${__datadir} ${__network} ${__prune} ${EL_EXTRAS}

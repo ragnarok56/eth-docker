@@ -1,5 +1,5 @@
-ARG DOCKER_TAG
-ARG DOCKER_REPO
+ARG DOCKER_TAG=latest
+ARG DOCKER_REPO=nethermind/nethermind
 
 FROM ${DOCKER_REPO}:${DOCKER_TAG}
 
@@ -11,6 +11,13 @@ ARG USER=nethermind
 ARG UID=10001
 # GID 10002 is deliberate so it can exchange secret with CL
 ARG GID=10002
+
+RUN set -eux; \
+	apt-get update; \
+	DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y ca-certificates gosu tzdata wget git adduser; \
+	rm -rf /var/lib/apt/lists/*; \
+# verify that the binary works
+        gosu nobody true
 
 RUN addgroup \
     --gid "${GID}" \
@@ -27,15 +34,10 @@ RUN adduser \
     --ingroup "${USER}" \
     "${USER}"
 
-RUN set -eux; \
-	apt-get update; \
-	DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y ca-certificates gosu tzdata wget git; \
-	rm -rf /var/lib/apt/lists/*; \
-# verify that the binary works
-        gosu nobody true
-
 # This only goes so far. keystore, logs and nethermind_db are volumes and need to be chown'd in the entrypoint
 RUN chown -R ${USER}:${USER} /nethermind
+RUN mkdir -p /var/lib/nethermind-og && chown -R ${USER}:${USER} /var/lib/nethermind-og \
+&& chmod -R 700 /var/lib/nethermind-og
 RUN mkdir -p /var/lib/nethermind/ee-secret && chown -R ${USER}:${USER} /var/lib/nethermind \
 && chmod -R 700 /var/lib/nethermind && chmod 777 /var/lib/nethermind/ee-secret
 

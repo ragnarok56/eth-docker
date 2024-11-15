@@ -2,7 +2,12 @@
 
 if [ "$(id -u)" = '0' ]; then
   chown -R user:user /var/lib/nimbus
-  exec gosu user docker-entrypoint.sh "$@"
+  if command -v gosu &>/dev/null; then
+    __as_user=gosu
+  else
+    __as_user=su-exec
+  fi
+  exec ${__as_user} user docker-entrypoint.sh "$@"
 fi
 
 # Remove old low-entropy token, related to Sigma Prime security audit
@@ -22,7 +27,7 @@ if [ -n "${JWT_SECRET}" ]; then
 fi
 
 if [[ -O "/var/lib/nimbus/ee-secret" ]]; then
-  # In case someone specificies JWT_SECRET but it's not a distributed setup
+  # In case someone specifies JWT_SECRET but it's not a distributed setup
   chmod 777 /var/lib/nimbus/ee-secret
 fi
 if [[ -O "/var/lib/nimbus/ee-secret/jwtsecret" ]]; then
@@ -97,6 +102,15 @@ fi
 # Web3signer URL
 if [[ "${EMBEDDED_VC}" = "true" && "${WEB3SIGNER}" = "true" ]]; then
   __w3s_url="--web3-signer-url=http://web3signer:9000"
+  while true; do
+    if curl -s -m 5 http://web3signer:9000 &> /dev/null; then
+        echo "Web3signer is up, starting Nimbus"
+        break
+    else
+        echo "Waiting for Web3signer to be reachable..."
+        sleep 5
+    fi
+  done
 else
   __w3s_url=""
 fi

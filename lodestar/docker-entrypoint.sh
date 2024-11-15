@@ -2,7 +2,7 @@
 
 if [ "$(id -u)" = '0' ]; then
   chown -R lsconsensus:lsconsensus /var/lib/lodestar
-  exec su-exec lsconsensus docker-entrypoint.sh "$@"
+  exec gosu lsconsensus docker-entrypoint.sh "$@"
 fi
 
 # Remove old low-entropy token, related to Sigma Prime security audit
@@ -22,7 +22,7 @@ if [ -n "${JWT_SECRET}" ]; then
 fi
 
 if [[ -O "/var/lib/lodestar/consensus/ee-secret" ]]; then
-  # In case someone specificies JWT_SECRET but it's not a distributed setup
+  # In case someone specifies JWT_SECRET but it's not a distributed setup
   chmod 777 /var/lib/lodestar/consensus/ee-secret
 fi
 if [[ -O "/var/lib/lodestar/consensus/ee-secret/jwtsecret" ]]; then
@@ -49,15 +49,14 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
   bootnodes="$(paste -s -d, "/var/lib/lodestar/consensus/testnet/${config_dir}/bootstrap_nodes.txt")"
   set +e
   __network="--paramsFile=/var/lib/lodestar/consensus/testnet/${config_dir}/config.yaml --genesisStateFile=/var/lib/lodestar/consensus/testnet/${config_dir}/genesis.ssz \
---bootnodes=${bootnodes} --network.connectToDiscv5Bootnodes --chain.trustedSetup=/var/lib/lodestar/consensus/testnet/${config_dir}/trusted_setup.txt \
---rest.namespace=*"
+--bootnodes=${bootnodes} --network.connectToDiscv5Bootnodes --rest.namespace=*"
 else
   __network="--network ${NETWORK}"
 fi
 
 # Check whether we should use MEV Boost
 if [ "${MEV_BOOST}" = "true" ]; then
-  __mev_boost="--builder --builder.urls=${MEV_NODE:-http://mev-boost:18550}"
+  __mev_boost="--builder --builder.url=${MEV_NODE:-http://mev-boost:18550}"
   echo "MEV Boost enabled"
 else
   __mev_boost=""
@@ -86,7 +85,15 @@ fi
 
 if [ "${IPV6}" = "true" ]; then
   echo "Configuring Lodestar to listen on IPv6 ports"
-  __ipv6="--listenAddress6 :: --port6 ${CL_P2P_PORT:-9000}"
+  __ipv6="--listenAddress 0.0.0.0 --listenAddress6 :: --port6 ${CL_IPV6_P2P_PORT:-9090}"
+# ENR discovery on v6 is not yet working, likely too few peers. Manual for now
+  __ipv6_pattern="^[0-9A-Fa-f]{1,4}:" # Sufficient to check the start
+  set +e
+  __public_v6=$(wget -6 -q -O- ifconfig.me)
+  set -e
+  if [[ "$__public_v6" =~ $__ipv6_pattern ]]; then
+    __ipv6+=" --enr.ip6 ${__public_v6}"
+  fi
 else
   __ipv6=""
 fi

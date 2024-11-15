@@ -30,7 +30,7 @@ if [ -n "${JWT_SECRET}" ]; then
 fi
 
 if [[ -O "/var/lib/teku/ee-secret" ]]; then
-  # In case someone specificies JWT_SECRET but it's not a distributed setup
+  # In case someone specifies JWT_SECRET but it's not a distributed setup
   chmod 777 /var/lib/teku/ee-secret
 fi
 if [[ -O "/var/lib/teku/ee-secret/jwtsecret" ]]; then
@@ -41,13 +41,19 @@ fi
 if [ -n "${RAPID_SYNC_URL:+x}" ]; then
     if [ "${ARCHIVE_NODE}" = "true" ]; then
         echo "Teku archive node cannot use checkpoint sync: Syncing from genesis."
-        __rapid_sync=""
+        __rapid_sync="--ignore-weak-subjectivity-period-enabled=true"
+      if [ "${NETWORK}" = "holesky" ]; then
+        __rapid_sync+=" --initial-state=https://checkpoint-sync.holesky.ethpandaops.io/eth/v2/debug/beacon/states/genesis"
+      fi
     else
         __rapid_sync="--checkpoint-sync-url=${RAPID_SYNC_URL}"
         echo "Checkpoint sync enabled"
     fi
 else
-    __rapid_sync=""
+    __rapid_sync="--ignore-weak-subjectivity-period-enabled=true"
+    if [ "${NETWORK}" = "holesky" ]; then
+      __rapid_sync+=" --initial-state=https://checkpoint-sync.holesky.ethpandaops.io/eth/v2/debug/beacon/states/genesis"
+    fi
 fi
 
 if [[ "${NETWORK}" =~ ^https?:// ]]; then
@@ -69,12 +75,10 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
   fi
   bootnodes="$(paste -s -d, "/var/lib/teku/testnet/${config_dir}/bootstrap_nodes.txt")"
   set +e
-  if [ -z "${__rapid_sync}" ]; then
-    __rapid_sync="--initial-state=/var/lib/teku/testnet/${config_dir}/genesis.ssz"
-  fi
+  __rapid_sync="--initial-state=/var/lib/teku/testnet/${config_dir}/genesis.ssz --ignore-weak-subjectivity-period-enabled=true"
   __network="--network=/var/lib/teku/testnet/${config_dir}/config.yaml --p2p-discovery-bootnodes=${bootnodes} \
 --data-storage-non-canonical-blocks-enabled=true --Xlog-include-p2p-warnings-enabled \
---metrics-block-timing-tracking-enabled --Xmetrics-blob-sidecars-storage-enabled=true --Xtrusted-setup=/var/lib/teku/testnet/${config_dir}/trusted_setup.txt \
+--metrics-block-timing-tracking-enabled --Xmetrics-blob-sidecars-storage-enabled=true \
 --Xpeer-rate-limit=100000 --Xpeer-request-limit=1000"
 else
   __network="--network=${NETWORK}"
@@ -82,7 +86,7 @@ fi
 
 # Check whether we should use MEV Boost
 if [ "${MEV_BOOST}" = "true" ]; then
-  __mev_boost="--validators-builder-registration-default-enabled --builder-endpoint=${MEV_NODE:-http://mev-boost:18550}"
+  __mev_boost="--validators-builder-registration-default-enabled --validators-proposer-blinded-blocks-enabled --builder-endpoint=${MEV_NODE:-http://mev-boost:18550}"
   echo "MEV Boost enabled"
 else
   __mev_boost=""
@@ -127,12 +131,37 @@ else
   __w3s_url=""
 fi
 
+if [ "${IPV6}" = "true" ]; then
+  echo "Configuring Teku to listen on IPv6 ports"
+  __ipv6="--p2p-interface 0.0.0.0,:: --p2p-port-ipv6 ${CL_IPV6_P2P_PORT:-9090}"
+# ENR discovery on v6 is not yet working, likely too few peers. Manual for now
+  __ipv4_pattern="^([0-9]{1,3}\.){3}[0-9]{1,3}$"
+  __ipv6_pattern="^[0-9A-Fa-f]{1,4}:" # Sufficient to check the start
+  set +e
+  __public_v4=$(curl -s -4 ifconfig.me)
+  __public_v6=$(curl -s -6 ifconfig.me)
+  set -e
+  __valid_v4=0
+  if [[ "$__public_v4" =~ $__ipv4_pattern ]]; then
+    __valid_v4=1
+  fi
+  if [[ "$__public_v6" =~ $__ipv6_pattern ]]; then
+    if [ "${__valid_v4}" -eq 1 ]; then
+      __ipv6+=" --p2p-advertised-ips ${__public_v4},${__public_v6}"
+    else
+      __ipv6+=" --p2p-advertised-ip ${__public_v6}"
+    fi
+  fi
+else
+  __ipv6=""
+fi
+
 if [ "${DEFAULT_GRAFFITI}" = "true" ]; then
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__rapid_sync} ${__prune} ${__beacon_stats} ${__doppel} ${CL_EXTRAS} ${VC_EXTRAS}
+  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__rapid_sync} ${__prune} ${__beacon_stats} ${__doppel} ${__ipv6} ${CL_EXTRAS} ${VC_EXTRAS}
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} "--validators-graffiti=${GRAFFITI}" ${__w3s_url} ${__mev_boost} ${__rapid_sync} ${__prune} ${__beacon_stats} ${__doppel} ${CL_EXTRAS} ${VC_EXTRAS}
+  exec "$@" ${__network} "--validators-graffiti=${GRAFFITI}" ${__w3s_url} ${__mev_boost} ${__rapid_sync} ${__prune} ${__beacon_stats} ${__doppel} ${__ipv6} ${CL_EXTRAS} ${VC_EXTRAS}
 fi

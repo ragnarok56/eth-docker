@@ -1,4 +1,3 @@
-version: "3.9"
 x-logging: &logging
   logging:
     driver: json-file
@@ -25,6 +24,7 @@ services:
       target: consensus
       <<: *prysm-build
     image: prysm-consensus:local
+    pull_policy: never
     user: prysmconsensus
     stop_grace_period: 1m
     volumes:
@@ -40,12 +40,14 @@ services:
       - ARCHIVE_NODE=${ARCHIVE_NODE:-}
       - NETWORK=${NETWORK}
     ports:
-      - ${HOST_IP:-}${PRYSM_PORT}:${PRYSM_PORT}/tcp
-      - ${HOST_IP:-}${PRYSM_UDP_PORT}:${PRYSM_UDP_PORT}/udp
+      - ${HOST_IP:-}:${PRYSM_PORT}:${PRYSM_PORT}/tcp
+      - ${HOST_IP:-}:${PRYSM_UDP_PORT}:${PRYSM_UDP_PORT}/udp
+      - ${HOST_IP:-}:${CL_QUIC_PORT:-9001}:${CL_QUIC_PORT:-9001}/udp
     networks:
       default:
         aliases:
           - eth2
+          - ${NETWORK}-consensus
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -54,9 +56,9 @@ services:
       - /var/lib/prysm/
       - --rpc-host
       - 0.0.0.0
-      - --grpc-gateway-host
+      - --http-host
       - 0.0.0.0
-      - --grpc-gateway-port
+      - --http-port
       - ${CL_REST_PORT:-5052}
       # Allow larger messages so credential change messages can be sent
       - --rpc-max-page-size
@@ -71,8 +73,11 @@ services:
       - ${PRYSM_PORT}
       - --p2p-udp-port
       - ${PRYSM_UDP_PORT}
+      - --p2p-quic-port
+      - ${CL_QUIC_PORT}
+      - --enable-quic
       - --p2p-max-peers
-      - ${CL_MAX_PEER_COUNT:-45}
+      - ${CL_MAX_PEER_COUNT:-70}
       - --verbosity
       - ${LOG_LEVEL}
       - --accept-terms-of-use
@@ -86,7 +91,13 @@ services:
       - metrics.scrape=true
       - metrics.path=/metrics
       - metrics.port=8008
+      - metrics.instance=consensus
+      - metrics.network=${NETWORK}
 
 volumes:
   prysmconsensus-data:
   jwtsecret:
+
+networks:
+  default:
+    enable_ipv6: ${IPV6:-false}

@@ -1,4 +1,3 @@
-version: "3.9"
 x-logging: &logging
   logging:
     driver: json-file
@@ -21,6 +20,7 @@ services:
     stop_grace_period: 5m
     stop_signal: SIGINT
     image: nimbus-el:local
+    pull_policy: never
     user: user
     environment:
       - JWT_SECRET=${JWT_SECRET:-}
@@ -31,8 +31,8 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/nimbus/ee-secret
     ports:
-      - ${HOST_IP:-}${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/tcp
-      - ${HOST_IP:-}${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/udp
+      - ${HOST_IP:-}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/tcp
+      - ${HOST_IP:-}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/udp
     networks:
       default:
         aliases:
@@ -42,16 +42,11 @@ services:
       - docker-entrypoint.sh
       - nimbus
       - --rpc
-      - --rpc-address=0.0.0.0
-      - --rpc-port=${EL_RPC_PORT:-8545}
-      - --rpc-api=eth
+      - --http-address=0.0.0.0
+      - --http-port=${EL_RPC_PORT:-8545}
       - --data-dir=/var/lib/nimbus
-      - --key-store=/var/lib/nimbus/nimbus/keystore
       - --tcp-port=${EL_P2P_PORT:-30303}
       - --ws
-      - --ws-address=0.0.0.0
-      - --ws-port=${EL_WS_PORT:-8546}
-      - --ws-api=eth
       - --network=${NETWORK}
       - --metrics
       - --metrics-port=6060
@@ -61,8 +56,6 @@ services:
       - --engine-api-port=${EE_PORT:-8551}
       - --engine-api-address=0.0.0.0
       - --engine-api-ws
-      - --engine-api-ws-port=8552
-      - --engine-api-ws-address=0.0.0.0
       - --max-peers=${EL_MAX_PEER_COUNT:-25}
       - --log-level=${LOG_LEVEL}
     labels:
@@ -90,6 +83,11 @@ services:
       - traefik.http.routers.${EE_HOST:-ee}.rule=Host(`${EE_HOST:-ee}.${DOMAIN}`)
       - traefik.http.routers.${EE_HOST:-ee}.tls.certresolver=letsencrypt
       - traefik.http.services.${EE_HOST:-ee}.loadbalancer.server.port=${EE_PORT:-8551}
+
 volumes:
   nimbus-el-data:
   jwtsecret:
+
+networks:
+  default:
+    enable_ipv6: ${IPV6:-false}

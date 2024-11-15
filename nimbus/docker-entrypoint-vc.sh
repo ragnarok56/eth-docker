@@ -2,7 +2,7 @@
 
 if [ "$(id -u)" = '0' ]; then
   chown -R user:user /var/lib/nimbus
-  exec gosu user docker-entrypoint-vc.sh "$@"
+  exec su-exec user docker-entrypoint-vc.sh "$@"
 fi
 
 # Remove old low-entropy token, related to Sigma Prime security audit
@@ -37,16 +37,32 @@ __log_level="--log-level=${LOG_LEVEL^^}"
 # Web3signer URL
 if [ "${WEB3SIGNER}" = "true" ]; then
   __w3s_url="--web3-signer-url=http://web3signer:9000"
+  while true; do
+    if curl -s -m 5 http://web3signer:9000 &> /dev/null; then
+        echo "Web3signer is up, starting Nimbus"
+        break
+    else
+        echo "Waiting for Web3signer to be reachable..."
+        sleep 5
+    fi
+  done
 else
   __w3s_url=""
+fi
+
+# Distributed attestation aggregation
+if [ "${ENABLE_DIST_ATTESTATION_AGGR}" =  "true" ]; then
+  __att_aggr="--distributed"
+else
+  __att_aggr=""
 fi
 
 if [ "${DEFAULT_GRAFFITI}" = "true" ]; then
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__w3s_url} ${__log_level} ${__doppel} ${__mev_boost} ${VC_EXTRAS}
+  exec "$@" ${__w3s_url} ${__log_level} ${__doppel} ${__mev_boost} ${__att_aggr} ${VC_EXTRAS}
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__w3s_url} "--graffiti=${GRAFFITI}" ${__log_level} ${__doppel} ${__mev_boost} ${VC_EXTRAS}
+  exec "$@" ${__w3s_url} "--graffiti=${GRAFFITI}" ${__log_level} ${__doppel} ${__mev_boost} ${__att_aggr} ${VC_EXTRAS}
 fi

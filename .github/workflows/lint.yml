@@ -10,8 +10,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Lint sources
         run: |
-          pip install pre-commit
+          sudo apt-get update && sudo apt-get install -y pre-commit
           pre-commit run --all-files
