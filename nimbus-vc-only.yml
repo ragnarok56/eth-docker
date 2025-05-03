@@ -32,24 +32,25 @@ services:
       - jwtsecret:/var/lib/nimbus/ee-secret
     environment:
       - MEV_BOOST=${MEV_BOOST}
+      - CL_NODE=${CL_NODE}
       - DOPPELGANGER=${DOPPELGANGER}
       - LOG_LEVEL=${LOG_LEVEL}
       - VC_EXTRAS=${VC_EXTRAS:-}
       - GRAFFITI=${GRAFFITI:-}
       - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
       - WEB3SIGNER=${WEB3SIGNER:-false}
+      - W3S_NODE=${W3S_NODE}
       - ENABLE_DIST_ATTESTATION_AGGR=${ENABLE_DIST_ATTESTATION_AGGR:-false}
     networks:
       default:
         aliases:
-          - vc
+          - ${VC_ALIAS}
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
       - /usr/local/bin/nimbus_validator_client
       - --data-dir=/var/lib/nimbus
       - --non-interactive
-      - --beacon-node=${CL_NODE}
       - --metrics
       - --metrics-port=8009
       - --metrics-address=0.0.0.0
@@ -92,13 +93,14 @@ services:
       - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
       - KEY_API_PORT=${KEY_API_PORT:-7500}
       - WEB3SIGNER=${WEB3SIGNER:-false}
+      - W3S_NODE=${W3S_NODE}
       - CL_NODE=${CL_NODE}
     depends_on:
       - validator
     entrypoint:
       - keymanager.sh
       - /var/lib/nimbus/api-token.txt
-      - vc
+      - ${VC_ALIAS}
 
 volumes:
   nimbus-vc-data:

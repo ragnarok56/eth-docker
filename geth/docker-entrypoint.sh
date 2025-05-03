@@ -50,10 +50,10 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(paste -s -d, "/var/lib/geth/testnet/${config_dir}/bootnode.txt")"
+  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/geth/testnet/${config_dir}/enodes.yaml" | paste -sd ",")"
   networkid="$(jq -r '.config.chainId' "/var/lib/geth/testnet/${config_dir}/genesis.json")"
   set +e
-  __network="--bootnodes=${bootnodes} --networkid=${networkid} --http.api=eth,net,web3,debug,admin,txpool"
+  __network="--bootnodes=${bootnodes} --networkid=${networkid}"
   if [ ! -d "/var/lib/geth/geth/chaindata/" ]; then
     geth init --datadir /var/lib/geth "/var/lib/geth/testnet/${config_dir}/genesis.json"
   fi

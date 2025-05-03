@@ -2,12 +2,7 @@
 
 if [ "$(id -u)" = '0' ]; then
   chown -R user:user /var/lib/nimbus
-  if command -v gosu &>/dev/null; then
-    __as_user=gosu
-  else
-    __as_user=su-exec
-  fi
-  exec ${__as_user} user docker-entrypoint.sh "$@"
+  exec gosu user docker-entrypoint.sh "$@"
 fi
 
 # Remove old low-entropy token, related to Sigma Prime security audit
@@ -51,25 +46,25 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(paste -s -d, "/var/lib/nimbus/testnet/${config_dir}/bootstrap_nodes.txt")"
+  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/nimbus/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
   set +e
   __network="--network=/var/lib/nimbus/testnet/${config_dir} --bootstrap-node=${bootnodes}"
 else
   __network="--network=${NETWORK}"
 fi
 
-if [ -n "${RAPID_SYNC_URL:+x}" ] && [ ! -f "/var/lib/nimbus/setupdone" ]; then
+if [ -n "${CHECKPOINT_SYNC_URL:+x}" ] && [ ! -f "/var/lib/nimbus/setupdone" ]; then
     if [ "${ARCHIVE_NODE}" = "true" ]; then
         echo "Starting checkpoint sync with backfill and archive reindex. Nimbus will restart when done."
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-        /usr/local/bin/nimbus_beacon_node trustedNodeSync --backfill=true --reindex ${__network} --data-dir=/var/lib/nimbus --trusted-node-url="${RAPID_SYNC_URL}"
+        /usr/local/bin/nimbus_beacon_node trustedNodeSync --backfill=true --reindex ${__network} --data-dir=/var/lib/nimbus --trusted-node-url="${CHECKPOINT_SYNC_URL}"
         touch /var/lib/nimbus/setupdone
     else
         echo "Starting checkpoint sync. Nimbus will restart when done."
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-        /usr/local/bin/nimbus_beacon_node trustedNodeSync --backfill=false ${__network} --data-dir=/var/lib/nimbus --trusted-node-url="${RAPID_SYNC_URL}"
+        /usr/local/bin/nimbus_beacon_node trustedNodeSync --backfill=false ${__network} --data-dir=/var/lib/nimbus --trusted-node-url="${CHECKPOINT_SYNC_URL}"
         touch /var/lib/nimbus/setupdone
     fi
 fi
@@ -101,9 +96,9 @@ fi
 
 # Web3signer URL
 if [[ "${EMBEDDED_VC}" = "true" && "${WEB3SIGNER}" = "true" ]]; then
-  __w3s_url="--web3-signer-url=http://web3signer:9000"
+  __w3s_url="--web3-signer-url=${W3S_NODE}"
   while true; do
-    if curl -s -m 5 http://web3signer:9000 &> /dev/null; then
+    if curl -s -m 5 "${W3S_NODE}" &> /dev/null; then
         echo "Web3signer is up, starting Nimbus"
         break
     else

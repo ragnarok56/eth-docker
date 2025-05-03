@@ -29,14 +29,14 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/lodestar/consensus/ee-secret
     environment:
-      - RAPID_SYNC_URL=${RAPID_SYNC_URL}
+      - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
       - MEV_NODE=${MEV_NODE}
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - CL_EXTRAS=${CL_EXTRAS:-}
-      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
+      - ARCHIVE_NODE=${CL_ARCHIVE_NODE:-}
       - NETWORK=${NETWORK}
       - IPV6=${IPV6:-false}
       - CL_IPV6_P2P_PORT=${CL_IPV6_P2P_PORT:-9090}
@@ -50,7 +50,7 @@ services:
       default:
         aliases:
           - eth2
-          - ${NETWORK}-consensus
+          - ${CL_ALIAS:-${NETWORK}-consensus} # This allows multiple Eth Docker stacks all connected to the same bridge network
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh

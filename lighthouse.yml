@@ -31,14 +31,14 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/lighthouse/beacon/ee-secret
     environment:
-      - RAPID_SYNC_URL=${RAPID_SYNC_URL}
+      - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
       - MEV_NODE=${MEV_NODE}
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - CL_EXTRAS=${CL_EXTRAS:-}
-      - ARCHIVE_NODE=${ARCHIVE_NODE:-false}
+      - ARCHIVE_NODE=${CL_ARCHIVE_NODE:-false}
       - IPV6=${IPV6:-false}
       - CL_P2P_PORT=${CL_P2P_PORT:-9000}
       - CL_QUIC_PORT=${CL_QUIC_PORT:-9001}
@@ -51,7 +51,7 @@ services:
       default:
         aliases:
           - eth2
-          - ${NETWORK}-consensus
+          - ${CL_ALIAS:-${NETWORK}-consensus} # This allows multiple Eth Docker stacks all connected to the same bridge network
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -114,7 +114,7 @@ services:
     networks:
       default:
         aliases:
-          - vc
+          - ${VC_ALIAS}
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
@@ -126,7 +126,6 @@ services:
       - ${CL_NODE:-http://consensus:5052}
       - --broadcast
       - attestations,sync-committee,blocks,subscriptions
-      - --produce-block-v3
       - --debug-level=${LOG_LEVEL}
       - --metrics
       - --metrics-address
@@ -207,13 +206,14 @@ services:
       - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
       - KEY_API_PORT=${KEY_API_PORT:-7500}
       - WEB3SIGNER=${WEB3SIGNER:-false}
+      - W3S_NODE=${W3S_NODE}
       - CL_NODE=${CL_NODE}
     depends_on:
       - validator
     entrypoint:
       - keymanager.sh
       - /var/lib/lighthouse/validators/api-token.txt
-      - vc
+      - ${VC_ALIAS}
 
   set-cl-prune-marker:
     profiles: ["tools"]

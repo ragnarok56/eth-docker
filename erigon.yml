@@ -24,14 +24,15 @@ services:
     environment:
       - JWT_SECRET=${JWT_SECRET}
       - EL_EXTRAS=${EL_EXTRAS:-}
-      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
+      - ARCHIVE_NODE=${EL_ARCHIVE_NODE:-}
+      - EL_MINIMAL_NODE=${EL_MINIMAL_NODE:-}
       - NETWORK=${NETWORK}
       - IPV6=${IPV6:-false}
       - DOCKER_TAG=${ERIGON_DOCKER_TAG:-latest}
       - COMPOSE_FILE=${COMPOSE_FILE}
       - CL_P2P_PORT=${CL_P2P_PORT:-9000}
       - CL_REST_PORT=${CL_REST_PORT:-5052}
-      - RAPID_SYNC_URL=${RAPID_SYNC_URL:-}
+      - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL:-}
       - MEV_BOOST=${MEV_BOOST:-false}
       - MEV_NODE=${MEV_NODE:-}
     volumes:
@@ -41,8 +42,8 @@ services:
     ports:
       - ${HOST_IP:-}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/tcp
       - ${HOST_IP:-}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/udp
-      - ${HOST_IP:-}:${ERIGON_P2P_PORT_2:-30304}:${ERIGON_P2P_PORT_2:-30304}/tcp
-      - ${HOST_IP:-}:${ERIGON_P2P_PORT_2:-30304}:${ERIGON_P2P_PORT_2:-30304}/udp
+      - ${HOST_IP:-}:${EL_P2P_PORT_2:-30304}:${EL_P2P_PORT_2:-30304}/tcp
+      - ${HOST_IP:-}:${EL_P2P_PORT_2:-30304}:${EL_P2P_PORT_2:-30304}/udp
       - ${HOST_IP:-}:${ERIGON_P2P_PORT_3:-30305}:${ERIGON_P2P_PORT_3:-30305}/tcp
       - ${HOST_IP:-}:${ERIGON_P2P_PORT_3:-30305}:${ERIGON_P2P_PORT_3:-30305}/udp
       # torrent ports
@@ -52,7 +53,7 @@ services:
       default:
         aliases:
           - eth1
-          - ${NETWORK}-execution # This allows multiple Eth Docker stacks all connected to the same central traefik
+          - ${EL_ALIAS:-${NETWORK}-execution} # This allows multiple Eth Docker stacks all connected to the same bridge network
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -64,7 +65,7 @@ services:
       - --port
       - ${EL_P2P_PORT:-30303}
       - --p2p.allowed-ports
-      - ${EL_P2P_PORT:-30303},${ERIGON_P2P_PORT_2:-30304},${ERIGON_P2P_PORT_3:-30305}
+      - ${EL_P2P_PORT:-30303},${EL_P2P_PORT_2:-30304},${ERIGON_P2P_PORT_3:-30305}
       - --torrent.port
       - ${ERIGON_TORRENT_PORT:-42069}
       - --nat
@@ -74,6 +75,9 @@ services:
       - --metrics
       - --metrics.addr
       - 0.0.0.0
+# Erigon needs this to be explicit. When it's covered by defaults, remove
+      - --http.api
+      - web3,eth,net,engine
       - --http
       - --http.addr
       - 0.0.0.0
@@ -100,6 +104,19 @@ services:
       - metrics.port=6060
       - metrics.instance=execution
       - metrics.network=${NETWORK}
+
+  wipe-db:
+    profiles: ["tools"]
+    restart: "no"
+    image: alpine:3
+    user: "10001"
+    volumes:
+      - erigon-el-data:/var/lib/erigon
+      - /etc/localtime:/etc/localtime:ro
+    entrypoint: ["/bin/sh","-c"]
+    command:
+      - |
+        rm -rf /var/lib/erigon/caplin/*
 
 volumes:
   erigon-el-data:

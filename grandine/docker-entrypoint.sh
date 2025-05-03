@@ -41,7 +41,7 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(paste -s -d, "/var/lib/grandine/testnet/${config_dir}/bootstrap_nodes.txt")"
+  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/grandine/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
   set +e
   __network="--configuration-directory=/var/lib/grandine/testnet/${config_dir} --boot-nodes=${bootnodes}"
 else
@@ -51,16 +51,18 @@ fi
 if [ "${ARCHIVE_NODE}" = "true" ]; then
   echo "Grandine archive node without pruning"
   __prune="--back-sync"
-else
+elif [ "${CL_MINIMAL_NODE}" = "true" ]; then
   __prune="--prune-storage"
+else
+  __prune=""
 fi
 
 # Check whether we should rapid sync
-if [ -n "${RAPID_SYNC_URL}" ]; then
-  __rapid_sync="--checkpoint-sync-url=${RAPID_SYNC_URL}"
+if [ -n "${CHECKPOINT_SYNC_URL}" ]; then
+  __checkpoint_sync="--checkpoint-sync-url=${CHECKPOINT_SYNC_URL}"
   echo "Checkpoint sync enabled"
 else
-  __rapid_sync=""
+  __checkpoint_sync=""
 fi
 
 # Check whether we should send stats to beaconcha.in
@@ -106,9 +108,9 @@ fi
 
 # Web3signer URL
 if [[ "${EMBEDDED_VC}" = "true" && "${WEB3SIGNER}" = "true" ]]; then
-  __w3s_url="--web3signer-urls http://web3signer:9000"
+  __w3s_url="--web3signer-urls ${W3S_NODE}"
   while true; do
-    if curl -s -m 5 http://web3signer:9000 &> /dev/null; then
+    if curl -s -m 5 "${W3S_NODE}" &> /dev/null; then
         echo "web3signer is up, starting Grandine"
         break
     else
@@ -123,9 +125,9 @@ fi
 if [ "${DEFAULT_GRAFFITI}" = "true" ]; then
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__rapid_sync} ${__prune} ${__beacon_stats} ${__ipv6} ${CL_EXTRAS} ${VC_EXTRAS}
+  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__checkpoint_sync} ${__prune} ${__beacon_stats} ${__ipv6} ${CL_EXTRAS} ${VC_EXTRAS}
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__rapid_sync} ${__prune} ${__beacon_stats} ${__ipv6} --graffiti "${GRAFFITI}" ${CL_EXTRAS} ${VC_EXTRAS}
+  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__checkpoint_sync} ${__prune} ${__beacon_stats} ${__ipv6} --graffiti "${GRAFFITI}" ${CL_EXTRAS} ${VC_EXTRAS}
 fi

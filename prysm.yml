@@ -33,12 +33,12 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/prysm/ee-secret
     environment:
-      - RAPID_SYNC_URL=${RAPID_SYNC_URL}
+      - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
       - MEV_NODE=${MEV_NODE}
       - CL_EXTRAS=${CL_EXTRAS:-}
-      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
+      - ARCHIVE_NODE=${CL_ARCHIVE_NODE:-}
       - NETWORK=${NETWORK}
     ports:
       - ${HOST_IP:-}:${PRYSM_PORT}:${PRYSM_PORT}/tcp
@@ -48,7 +48,7 @@ services:
       default:
         aliases:
           - eth2
-          - ${NETWORK}-consensus
+          - ${CL_ALIAS:-${NETWORK}-consensus} # This allows multiple Eth Docker stacks all connected to the same bridge network
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -77,7 +77,6 @@ services:
       - ${PRYSM_UDP_PORT}
       - --p2p-quic-port
       - ${CL_QUIC_PORT}
-      - --enable-quic
       - --p2p-max-peers
       - ${CL_MAX_PEER_COUNT:-70}
       - --verbosity
@@ -114,12 +113,13 @@ services:
       - GRAFFITI=${GRAFFITI:-}
       - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
       - WEB3SIGNER=${WEB3SIGNER:-false}
+      - W3S_NODE=${W3S_NODE}
       - NETWORK=${NETWORK}
       - ENABLE_DIST_ATTESTATION_AGGR=${ENABLE_DIST_ATTESTATION_AGGR:-false}
     networks:
       default:
         aliases:
-          - vc
+          - ${VC_ALIAS}
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
@@ -246,6 +246,7 @@ services:
       - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-}
       - KEY_API_PORT=${KEY_API_PORT:-7500}
       - WEB3SIGNER=${WEB3SIGNER:-false}
+      - W3S_NODE=${W3S_NODE}
       - CL_NODE=${CL_NODE}
       - PRYSM=true
     depends_on:
@@ -253,7 +254,7 @@ services:
     entrypoint:
       - keymanager.sh
       - /var/lib/prysm/auth-token
-      - vc
+      - ${VC_ALIAS}
 
 volumes:
   prysmbeacon-data:

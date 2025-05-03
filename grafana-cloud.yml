@@ -43,7 +43,7 @@ services:
 
   ethereum-metrics-exporter:
     restart: "unless-stopped"
-    image: samcm/ethereum-metrics-exporter:0.24.0-debian
+    image: samcm/ethereum-metrics-exporter:debian-latest
     entrypoint:
       - /ethereum-metrics-exporter
       - --consensus-url=${CL_NODE}
@@ -109,13 +109,16 @@ services:
 
   cadvisor:
     restart: "unless-stopped"
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /:/rootfs:ro,rslave
       - /var/run:/var/run
       - /sys:/sys:ro,rslave
-      - /var/lib/docker:/var/lib/docker:ro,rslave
+      - ${DOCKER_ROOT:-/var/lib/docker}:/var/lib/docker:ro,rslave
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    privileged: true
     command:
       - --docker_only
       - --housekeeping_interval=30s
@@ -134,7 +137,7 @@ services:
       - /etc/machine-id:/etc/machine-id:ro
       - ./promtail:/etc/promtail
       - promtail-data:/tmp
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro,rslave
+      - ${DOCKER_ROOT:-/var/lib/docker}/containers:/var/lib/docker/containers:ro,rslave
     entrypoint: ./etc/promtail/entrypoint.sh
     command: ["/usr/bin/promtail"]
     environment:

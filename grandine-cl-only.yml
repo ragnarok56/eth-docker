@@ -30,7 +30,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/grandine/ee-secret
     environment:
-      - RAPID_SYNC_URL=${RAPID_SYNC_URL}
+      - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
       - MEV_NODE=${MEV_NODE}
@@ -43,7 +43,8 @@ services:
       - DOPPELGANGER=false
       - GRAFFITI=
       - DEFAULT_GRAFFITI=true
-      - ARCHIVE_NODE=${ARCHIVE_NODE:-false}
+      - ARCHIVE_NODE=${CL_ARCHIVE_NODE:-false}
+      - CL_MINIMAL_NODE=${CL_MINIMAL_NODE:-true}
       - IPV6=${IPV6:-false}
       - CL_P2P_PORT=${CL_P2P_PORT:-9000}
       - CL_QUIC_PORT=${CL_QUIC_PORT:-9001}
@@ -56,6 +57,7 @@ services:
       default:
         aliases:
           - eth2
+          - ${CL_ALIAS:-${NETWORK}-consensus} # This allows multiple Eth Docker stacks all connected to the same bridge network
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh

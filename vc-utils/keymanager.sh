@@ -51,39 +51,46 @@ call_api() {
 }
 
 call_cl_api() {
-    set +e
-    if [ -z "${__api_data}" ]; then
-        __code=$(curl -m 60 -s --show-error -o /tmp/result.txt -w "%{http_code}" -X "${__http_method}" -H "Accept: application/json" \
-            "${CL_NODE}"/"${__api_path}")
-    else
-        __code=$(curl -m 60 -s --show-error -o /tmp/result.txt -w "%{http_code}" -X "${__http_method}" -H "Accept: application/json" -H "Content-Type: application/json" \
-            --data "${__api_data}" "${CL_NODE}"/"${__api_path}")
-    fi
-    __return=$?
-    if [ $__return -ne 0 ]; then
-        echo "Error encountered while trying to call the consensus client REST API via curl."
-        echo "Please make sure the ${CL_NODE} URL is reachable."
-        echo "Error code $__return"
-        exit $__return
-    fi
-    if [ -f /tmp/result.txt ]; then
-        __result=$(cat /tmp/result.txt)
-    else
-        echo "Error encountered while trying to call the consensus client REST API via curl."
-        echo "HTTP code: ${__code}"
-        exit 1
-    fi
+  set +e
+  if [ -z "${__api_data}" ]; then
+    __code=$(curl -m 60 -s --show-error -o /tmp/result.txt -w "%{http_code}" -X "${__http_method}" -H "Accept: application/json" \
+        "${CL_NODE}"/"${__api_path}")
+  else
+    __code=$(curl -m 60 -s --show-error -o /tmp/result.txt -w "%{http_code}" -X "${__http_method}" -H "Accept: application/json" -H "Content-Type: application/json" \
+        --data "${__api_data}" "${CL_NODE}"/"${__api_path}")
+  fi
+  __return=$?
+  if [ $__return -ne 0 ]; then
+    echo "Error encountered while trying to call the consensus client REST API via curl."
+    echo "Please make sure the ${CL_NODE} URL is reachable."
+    echo "Error code $__return"
+    exit $__return
+  fi
+  if [ -f /tmp/result.txt ]; then
+    __result=$(cat /tmp/result.txt)
+  else
+    echo "Error encountered while trying to call the consensus client REST API via curl."
+    echo "HTTP code: ${__code}"
+    exit 1
+  fi
 }
 
 get-token() {
 set +e
-    __token=$(< "${__token_file}")
-    __return=$?
-    if [ $__return -ne 0 ]; then
-        echo "Error encountered while trying to get the keymanager API token."
-        echo "Please make sure the ${__service} service is up and its logs show the key manager API, port ${__api_port}, enabled."
-        exit $__return
-    fi
+  __token=$(tail -n 1 "${__token_file}")
+  __return=$?
+  if [ $__return -ne 0 ]; then
+    echo "Error encountered while trying to get the keymanager API token."
+    echo "Please make sure the ${__service} service is up and its logs show the key manager API, port ${__api_port}, enabled."
+    exit $__return
+  fi
+  if [ -z "${__token}" ]; then
+    echo "The keymnanager API token in ${__token_file_client} is empty."
+    echo "The token path is relative to the ${__service} container."
+    echo "This could happen if the file ends with an empty line, which is a client bug."
+    echo "Please report this on Github. Aborting."
+    exit 1
+  fi
 set -e
 }
 
@@ -339,11 +346,11 @@ exit-sign() {
       if [ "${WEB3SIGNER}" = "true" ]; then
         __token=NIL
         __vc_api_container=${__api_container}
-        __api_container=web3signer
+        __api_container=${__w3s_container}
         __vc_service=${__service}
         __service=web3signer
         __vc_api_port=${__api_port}
-        __api_port=9000
+        __api_port=${__w3s_port}
         __vc_api_tls=${__api_tls}
         __api_tls=false
       else
@@ -369,6 +376,8 @@ exit-sign() {
       __pubkeys+=( "${__pubkey}" )
     fi
 
+    __skipped=0
+    __signed=0
     get-token
     for __pubkey in "${__pubkeys[@]}"; do
       __api_data=""
@@ -376,11 +385,16 @@ exit-sign() {
       __api_path=eth/v1/validator/$__pubkey/voluntary_exit
       call_api
       case $__code in
-        200) echo "Signed voluntary exit for validator with public key $__pubkey";;
+        200) echo "Signed voluntary exit for validator with public key $__pubkey"; (( __signed+=1 ));;
         400) echo "The pubkey or limit was formatted wrong. Error: $(echo "$__result" | jq -r '.message')"; exit 1;;
         401) echo "No authorization token found. This is a bug. Error: $(echo "$__result" | jq -r '.message')"; exit 70;;
         403) echo "The authorization token is invalid. Error: $(echo "$__result" | jq -r '.message')"; exit 1;;
-        404) echo "Path not found error. Was that the right pubkey? Error: $(echo "$__result" | jq -r '.message')"; exit 0;;
+        404)
+          echo "Path not found error. The key ${__pubkey} has to be active with an index on the beacon chain to be able to sign an exit message."
+          echo "Error: $(echo "$__result" | jq -r '.message')"
+          (( __skipped+=1 ))
+          continue
+          ;;
         500) echo "Internal server error. Error: $(echo "$__result" | jq -r '.message')"; exit 1;;
         *) echo "Unexpected return code $__code. Result: $__result"; exit 1;;
       esac
@@ -397,6 +411,9 @@ exit-sign() {
       fi
       echo
     done
+
+    echo "Signed exit messages for ${__signed} keys"
+    echo "Skipped ${__skipped} keys because they weren't found or were not active on the beacon chain"
 }
 
 
@@ -451,11 +468,11 @@ validator-list() {
     if [ "${WEB3SIGNER}" = "true" ]; then
         __token=NIL
         __vc_api_container=${__api_container}
-        __api_container=web3signer
+        __api_container=${__w3s_container}
         __vc_service=${__service}
         __service=web3signer
         __vc_api_port=${__api_port}
-        __api_port=9000
+        __api_port=${__w3s_port}
         __vc_api_tls=${__api_tls}
         __api_tls=false
     else
@@ -490,9 +507,9 @@ validator-count() {
     if [ "${WEB3SIGNER}" = "true" ]; then
         __token=NIL
         __vc_api_container=${__api_container}
-        __api_container=web3signer
+        __api_container=${__w3s_container}
         __vc_api_port=${__api_port}
-        __api_port=9000
+        __api_port=${__w3s_port}
         __vc_api_tls=${__api_tls}
         __api_tls=false
     else
@@ -544,9 +561,9 @@ validator-delete() {
         if [ "${WEB3SIGNER}" = "true" ]; then
             __token=NIL
             __vc_api_container=${__api_container}
-            __api_container=web3signer
+            __api_container=${__w3s_container}
             __vc_api_port=${__api_port}
-            __api_port=9000
+            __api_port=${__w3s_port}
             __vc_api_tls=${__api_tls}
             __api_tls=false
         else
@@ -618,9 +635,9 @@ to delete it:"
         if [ "${WEB3SIGNER}" = "true" ]; then
             __token=NIL
             __vc_api_container=${__api_container}
-            __api_container=web3signer
+            __api_container=${__w3s_container}
             __vc_api_port=${__api_port}
-            __api_port=9000
+            __api_port=${__w3s_port}
             __vc_api_tls=${__api_tls}
             __api_tls=false
         else
@@ -867,9 +884,9 @@ and secrets directories into .eth/validator_keys instead."
         if [ "${WEB3SIGNER}" = "true" ]; then
             __token=NIL
             __vc_api_container=${__api_container}
-            __api_container=web3signer
+            __api_container=${__w3s_container}
             __vc_api_port=${__api_port}
-            __api_port=9000
+            __api_port=${__w3s_port}
             __vc_api_tls=${__api_tls}
             __api_tls=false
         else
@@ -882,13 +899,7 @@ and secrets directories into .eth/validator_keys instead."
         call_api
         case $__code in
             200) ;;
-            400)
-              if [ -z "${PRYSM:+x}" ]; then
-                echo "The pubkey was formatted wrong. Error: $(echo "$__result" | jq -r '.message')"; exit 1
-              else
-                echo "Bad format. Error: $__result"; exit 1
-              fi
-              ;;
+            400) echo "The pubkey was formatted wrong. Error: $(echo "$__result" | jq -r '.message')"; exit 1;;
             401) echo "No authorization token found. This is a bug. Error: $(echo "$__result" | jq -r '.message')"; exit 70;;
             403) echo "The authorization token is invalid. Error: $(echo "$__result" | jq -r '.message')"; exit 1;;
             500) echo "Internal server error. Error: $(echo "$__result" | jq -r '.message')"; exit 1;;
@@ -927,8 +938,8 @@ and secrets directories into .eth/validator_keys instead."
             __api_container=${__vc_api_container}
             __api_port=${__vc_api_port}
             __api_tls=${__vc_api_tls}
-
-            jq --arg pubkey_value "$__pubkey" --arg url_value "http://web3signer:9000" '. | .remote_keys += [{"pubkey": $pubkey_value, "url": $url_value}]' <<< '{}' >/tmp/apidata.txt
+# shellcheck disable=SC2153
+            jq --arg pubkey_value "$__pubkey" --arg url_value "${W3S_NODE}" '. | .remote_keys += [{"pubkey": $pubkey_value, "url": $url_value}]' <<< '{}' >/tmp/apidata.txt
 
             get-token
             __api_data=@/tmp/apidata.txt
@@ -1008,9 +1019,9 @@ validator-register() {
     __api_path=eth/v1/keystores
     __token=NIL
     __vc_api_container=${__api_container}
-    __api_container=web3signer
+    __api_container=${__w3s_container}
     __vc_api_port=${__api_port}
-    __api_port=9000
+    __api_port=${__w3s_port}
     __vc_api_tls=${__api_tls}
     __api_tls=false
     __validator-list-call
@@ -1029,7 +1040,7 @@ validator-register() {
 
     __w3s_pubkeys="$(echo "$__result" | jq -r '.data[].validating_pubkey')"
     while IFS= read -r __pubkey; do
-         jq --arg pubkey_value "$__pubkey" --arg url_value "http://web3signer:9000" '. | .remote_keys += [{"pubkey": $pubkey_value, "url": $url_value}]' <<< '{}' >/tmp/apidata.txt
+         jq --arg pubkey_value "$__pubkey" --arg url_value "${W3S_NODE}" '. | .remote_keys += [{"pubkey": $pubkey_value, "url": $url_value}]' <<< '{}' >/tmp/apidata.txt
 
         __api_data=@/tmp/apidata.txt
         __api_path=eth/v1/remotekeys
@@ -1167,9 +1178,9 @@ set -e
 if [ "$(id -u)" = '0' ]; then
     __token_file=$1
     __api_container=$2
-    case "$__api_container" in
-        vc) __service=validator;;
-        *) __service="$__api_container";;
+    case "$__api_container" in  # It's either consensus or some alias for the validator service
+        consensus) __service=consensus;;
+        *) __service=validator;;
     esac
     __api_port=${KEY_API_PORT:-7500}
     if [ -z "${TLS:+x}" ]; then
@@ -1209,18 +1220,21 @@ if [ "$(id -u)" = '0' ]; then
         exit 1
     fi
 fi
+__token_file_client="$1"
 __token_file=/tmp/api-token.txt
 __api_container=$2
 __api_port=${KEY_API_PORT:-7500}
+__w3s_container=$(echo "${W3S_NODE}" | awk -F[/:] '{print $4}')
+__w3s_port=$(echo "${W3S_NODE}" | awk -F[/:] '{print $5}')
 if [ -z "${TLS:+x}" ]; then
     __api_tls=false
 else
     __api_tls=true
 fi
 
-case "$__api_container" in
-    vc) __service=validator;;
-    *) __service="$__api_container";;
+case "$__api_container" in  # It's either consensus or some alias for the validator service
+    consensus) __service=consensus;;
+    *) __service=validator;;
 esac
 
 if echo "$@" | grep -q '.*--debug.*' 2>/dev/null ; then

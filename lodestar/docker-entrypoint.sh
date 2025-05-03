@@ -35,7 +35,7 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
+  # For lack of something more sophisticated, let's just fail if git fails to pull this
   set -e
   if [ ! -d "/var/lib/lodestar/consensus/testnet/${config_dir}" ]; then
     mkdir -p /var/lib/lodestar/consensus/testnet
@@ -46,7 +46,7 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(paste -s -d, "/var/lib/lodestar/consensus/testnet/${config_dir}/bootstrap_nodes.txt")"
+  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/lodestar/consensus/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
   set +e
   __network="--paramsFile=/var/lib/lodestar/consensus/testnet/${config_dir}/config.yaml --genesisStateFile=/var/lib/lodestar/consensus/testnet/${config_dir}/genesis.ssz \
 --bootnodes=${bootnodes} --network.connectToDiscv5Bootnodes --rest.namespace=*"
@@ -71,16 +71,16 @@ else
 fi
 
 # Check whether we should rapid sync
-if [ -n "${RAPID_SYNC_URL}" ]; then
+if [ -n "${CHECKPOINT_SYNC_URL}" ]; then
   if [ "${ARCHIVE_NODE}" = "true" ]; then
     echo "Lodestar archive node cannot use checkpoint sync: Syncing from genesis."
-    __rapid_sync=""
+    __checkpoint_sync="--chain.archiveBlobEpochs Infinity"
   else
-    __rapid_sync="--checkpointSyncUrl=${RAPID_SYNC_URL}"
+    __checkpoint_sync="--checkpointSyncUrl=${CHECKPOINT_SYNC_URL}"
     echo "Checkpoint sync enabled"
   fi
 else
-  __rapid_sync=""
+  __checkpoint_sync=""
 fi
 
 if [ "${IPV6}" = "true" ]; then
@@ -100,4 +100,4 @@ fi
 
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-exec "$@" ${__ipv6} ${__network} ${__mev_boost} ${__beacon_stats} ${__rapid_sync} ${CL_EXTRAS}
+exec "$@" ${__ipv6} ${__network} ${__mev_boost} ${__beacon_stats} ${__checkpoint_sync} ${CL_EXTRAS}

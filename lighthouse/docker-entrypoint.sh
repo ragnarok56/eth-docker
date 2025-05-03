@@ -47,7 +47,7 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(paste -s -d, "/var/lib/lighthouse/beacon/testnet/${config_dir}/bootstrap_nodes.txt")"
+  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/lighthouse/beacon/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
   set +e
   __network="--testnet-dir=/var/lib/lighthouse/beacon/testnet/${config_dir} --boot-nodes=${bootnodes}"
 else
@@ -55,17 +55,17 @@ else
 fi
 
 # Check whether we should rapid sync
-if [ -n "${RAPID_SYNC_URL}" ]; then
-  __rapid_sync="--checkpoint-sync-url=${RAPID_SYNC_URL}"
+if [ -n "${CHECKPOINT_SYNC_URL}" ]; then
+  __checkpoint_sync="--checkpoint-sync-url=${CHECKPOINT_SYNC_URL}"
   echo "Checkpoint sync enabled"
   if [ "${ARCHIVE_NODE}" = "true" ]; then
     echo "Lighthouse archive node without pruning"
-    __prune="--reconstruct-historic-states --genesis-backfill --disable-backfill-rate-limiting"
+    __prune="--reconstruct-historic-states --genesis-backfill --disable-backfill-rate-limiting --prune-blobs=false"
   else
     __prune=""
   fi
 else
-  __rapid_sync="--allow-insecure-genesis-sync"
+  __checkpoint_sync="--allow-insecure-genesis-sync"
   __prune=""
 fi
 
@@ -112,5 +112,5 @@ if [ -f /var/lib/lighthouse/beacon/prune-marker ]; then
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__mev_boost} ${__rapid_sync} ${__prune} ${__beacon_stats} ${__ipv6} ${CL_EXTRAS}
+  exec "$@" ${__network} ${__mev_boost} ${__checkpoint_sync} ${__prune} ${__beacon_stats} ${__ipv6} ${CL_EXTRAS}
 fi

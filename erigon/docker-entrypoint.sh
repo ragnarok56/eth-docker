@@ -43,22 +43,22 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(paste -s -d, "/var/lib/erigon/testnet/${config_dir}/bootnode.txt")"
+  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/erigon/testnet/${config_dir}/enodes.yaml" | paste -sd ",")"
   networkid="$(jq -r '.config.chainId' "/var/lib/erigon/testnet/${config_dir}/genesis.json")"
   set +e
-  __network="--bootnodes=${bootnodes} --networkid=${networkid} --http.api=eth,erigon,engine,web3,net,debug,trace,txpool,admin"
+  __network="--bootnodes=${bootnodes} --networkid=${networkid}"
   if [ ! -d /var/lib/erigon/chaindata ]; then
     erigon init --datadir /var/lib/erigon "/var/lib/erigon/testnet/${config_dir}/genesis.json"
   fi
 else
-  __network="--chain ${NETWORK} --http.api web3,eth,net,engine"
+  __network="--chain ${NETWORK}"
 fi
 
 __caplin=""
 __db_params=""
 # Literal match intended
 # shellcheck disable=SC2076
-if [[ "${DOCKER_TAG}" =~ "2." || "${DOCKER_TAG}" = "latest" ]]; then
+if [[ "${DOCKER_TAG}" =~ ^(v?2\.).* ]]; then
 # Check for network, and set prune accordingly
   if [ "${ARCHIVE_NODE}" = "true" ]; then
     echo "Erigon archive node without pruning"
@@ -76,8 +76,8 @@ if [[ "${DOCKER_TAG}" =~ "2." || "${DOCKER_TAG}" = "latest" ]]; then
     elif [[ "${NETWORK}" = "gnosis" ]]; then
       echo "gnosis: Running with prune.r.before=19469077 for gno deposit contract"
       __prune="--prune=htc --prune.r.before=19469077"
-    elif [[ "${NETWORK}" = "holesky" ]]; then
-      echo "holesky: Running without prune.r for eth deposit contract"
+    elif [[ "${NETWORK}" = "hoodi" ]]; then
+      echo "hoodi: Running without prune.r for eth deposit contract"
       __prune="--prune=htc"
     elif [[ "${NETWORK}" =~ ^https?:// ]]; then
       echo "Custom testnet: Running without prune.r for eth deposit contract"
@@ -92,6 +92,9 @@ else  # Erigon v3
   if [ "${ARCHIVE_NODE}" = "true" ]; then
     echo "Erigon archive node without pruning"
     __prune="--prune.mode=archive"
+  elif [ "${EL_MINIMAL_NODE}" = "true" ]; then
+    echo "Erigon minimal node with EIP-4444 expiry"
+    __prune="--prune.mode=minimal"
   else
     echo "Erigon full node with pruning"
     __prune="--prune.mode=full"
@@ -102,8 +105,8 @@ else  # Erigon v3
     __caplin="--externalcl=true"
   else
     echo "Running Erigon with internal Caplin consensus layer client"
-    __caplin="--caplin.discovery.addr=0.0.0.0 --caplin.discovery.port=${CL_P2P_PORT} --caplin.backfilling.blob=true"
-    __caplin+=" --caplin.discovery.tcpport=${CL_P2P_PORT} --caplin.backfilling=true --caplin.validator-monitor=true"
+    __caplin="--caplin.discovery.addr=0.0.0.0 --caplin.discovery.port=${CL_P2P_PORT} --caplin.blobs-immediate-backfill=true"
+    __caplin+=" --caplin.discovery.tcpport=${CL_P2P_PORT} --caplin.validator-monitor=true"
     __caplin+=" --beacon.api=beacon,builder,config,debug,events,node,validator,lighthouse"
     __caplin+=" --beacon.api.addr=0.0.0.0 --beacon.api.port=${CL_REST_PORT} --beacon.api.cors.allow-origins=*"
     if [ "${MEV_BOOST}" = "true" ]; then
@@ -111,10 +114,10 @@ else  # Erigon v3
       echo "MEV Boost enabled"
     fi
     if [ "${ARCHIVE_NODE}" = "true" ]; then
-      __caplin+=" --caplin.archive=true"
+      __caplin+=" --caplin.states-archive=true --caplin.blobs-archive=true --caplin.blobs-no-pruning=true --caplin.blocks-archive=true"
     fi
-    if [ -n "${RAPID_SYNC_URL}" ]; then
-      __caplin+=" --caplin.checkpoint-sync-url=${RAPID_SYNC_URL}"
+    if [ -n "${CHECKPOINT_SYNC_URL}" ]; then
+      __caplin+=" --caplin.checkpoint-sync-url=${CHECKPOINT_SYNC_URL}/eth/v2/debug/beacon/states/finalized"
       echo "Checkpoint sync enabled"
     else
       __caplin+=" --caplin.checkpoint-sync.disable=true"

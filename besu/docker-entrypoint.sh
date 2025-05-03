@@ -43,10 +43,9 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(paste -s -d, "/var/lib/besu/testnet/${config_dir}/bootnode.txt")"
+  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/besu/testnet/${config_dir}/enodes.yaml" | paste -sd ",")"
   set +e
-  __network="--genesis-file=/var/lib/besu/testnet/${config_dir}/besu.json --bootnodes=${bootnodes} \
---Xfilter-on-enr-fork-id=true --rpc-http-api=ADMIN,CLIQUE,MINER,ETH,NET,DEBUG,TXPOOL,ENGINE,TRACE,WEB3"
+  __network="--genesis-file=/var/lib/besu/testnet/${config_dir}/besu.json --bootnodes=${bootnodes}"
 else
   __network="--network ${NETWORK}"
 fi
@@ -56,13 +55,6 @@ if [ "${ARCHIVE_NODE}" = "true" ]; then
   __prune="--data-storage-format=FOREST --sync-mode=FULL"
 else
   __prune=""
-fi
-
-__memtotal=$(awk '/MemTotal/ {printf "%d", int($2/1024/1024)}' /proc/meminfo)
-if [ "${__memtotal}" -ge 60 ]; then
-  __spec="--Xplugin-rocksdb-high-spec-enabled=true"
-else
-  __spec=""
 fi
 
 # New or old datadir
@@ -92,5 +84,5 @@ if [ -f /var/lib/besu/prune-marker ]; then
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__datadir} ${__network} ${__ipv6} ${__prune} ${__spec} ${EL_EXTRAS}
+  exec "$@" ${__datadir} ${__network} ${__ipv6} ${__prune} ${EL_EXTRAS}
 fi

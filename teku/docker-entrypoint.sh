@@ -38,21 +38,21 @@ if [[ -O "/var/lib/teku/ee-secret/jwtsecret" ]]; then
 fi
 
 # Check whether we should rapid sync
-if [ -n "${RAPID_SYNC_URL:+x}" ]; then
+if [ -n "${CHECKPOINT_SYNC_URL:+x}" ]; then
     if [ "${ARCHIVE_NODE}" = "true" ]; then
         echo "Teku archive node cannot use checkpoint sync: Syncing from genesis."
-        __rapid_sync="--ignore-weak-subjectivity-period-enabled=true"
-      if [ "${NETWORK}" = "holesky" ]; then
-        __rapid_sync+=" --initial-state=https://checkpoint-sync.holesky.ethpandaops.io/eth/v2/debug/beacon/states/genesis"
+        __checkpoint_sync="--ignore-weak-subjectivity-period-enabled=true"
+      if [ "${NETWORK}" = "hoodi" ]; then
+        __checkpoint_sync+=" --initial-state=https://checkpoint-sync.hoodi.ethpandaops.io/eth/v2/debug/beacon/states/genesis"
       fi
     else
-        __rapid_sync="--checkpoint-sync-url=${RAPID_SYNC_URL}"
+        __checkpoint_sync="--checkpoint-sync-url=${CHECKPOINT_SYNC_URL}"
         echo "Checkpoint sync enabled"
     fi
 else
-    __rapid_sync="--ignore-weak-subjectivity-period-enabled=true"
-    if [ "${NETWORK}" = "holesky" ]; then
-      __rapid_sync+=" --initial-state=https://checkpoint-sync.holesky.ethpandaops.io/eth/v2/debug/beacon/states/genesis"
+    __checkpoint_sync="--ignore-weak-subjectivity-period-enabled=true"
+    if [ "${NETWORK}" = "hoodi" ]; then
+      __checkpoint_sync+=" --initial-state=https://checkpoint-sync.hoodi.ethpandaops.io/eth/v2/debug/beacon/states/genesis"
     fi
 fi
 
@@ -73,13 +73,10 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(paste -s -d, "/var/lib/teku/testnet/${config_dir}/bootstrap_nodes.txt")"
+  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/teku/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
   set +e
-  __rapid_sync="--initial-state=/var/lib/teku/testnet/${config_dir}/genesis.ssz --ignore-weak-subjectivity-period-enabled=true"
-  __network="--network=/var/lib/teku/testnet/${config_dir}/config.yaml --p2p-discovery-bootnodes=${bootnodes} \
---data-storage-non-canonical-blocks-enabled=true --Xlog-include-p2p-warnings-enabled \
---metrics-block-timing-tracking-enabled --Xmetrics-blob-sidecars-storage-enabled=true \
---Xpeer-rate-limit=100000 --Xpeer-request-limit=1000"
+  __checkpoint_sync="--initial-state=/var/lib/teku/testnet/${config_dir}/genesis.ssz --ignore-weak-subjectivity-period-enabled=true"
+  __network="--network=/var/lib/teku/testnet/${config_dir}/config.yaml --p2p-discovery-bootnodes=${bootnodes}"
 else
   __network="--network=${NETWORK}"
 fi
@@ -117,9 +114,9 @@ fi
 
 # Web3signer URL
 if [[ "${EMBEDDED_VC}" = "true" && "${WEB3SIGNER}" = "true" ]]; then
-  __w3s_url="--validators-external-signer-url http://web3signer:9000"
+  __w3s_url="--validators-external-signer-url ${W3S_NODE}"
 #  while true; do
-#    if curl -s -m 5 http://web3signer:9000 &> /dev/null; then
+#    if curl -s -m 5 ${W3S_NODE} &> /dev/null; then
 #        echo "web3signer is up, starting Teku"
 #        break
 #    else
@@ -159,9 +156,9 @@ fi
 if [ "${DEFAULT_GRAFFITI}" = "true" ]; then
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__rapid_sync} ${__prune} ${__beacon_stats} ${__doppel} ${__ipv6} ${CL_EXTRAS} ${VC_EXTRAS}
+  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__checkpoint_sync} ${__prune} ${__beacon_stats} ${__doppel} ${__ipv6} ${CL_EXTRAS} ${VC_EXTRAS}
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} "--validators-graffiti=${GRAFFITI}" ${__w3s_url} ${__mev_boost} ${__rapid_sync} ${__prune} ${__beacon_stats} ${__doppel} ${__ipv6} ${CL_EXTRAS} ${VC_EXTRAS}
+  exec "$@" ${__network} "--validators-graffiti=${GRAFFITI}" ${__w3s_url} ${__mev_boost} ${__checkpoint_sync} ${__prune} ${__beacon_stats} ${__doppel} ${__ipv6} ${CL_EXTRAS} ${VC_EXTRAS}
 fi

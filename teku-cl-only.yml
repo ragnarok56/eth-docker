@@ -30,7 +30,7 @@ services:
       - jwtsecret:/var/lib/teku/ee-secret
     environment:
       - JAVA_OPTS=${TEKU_HEAP:--Xmx7g}
-      - RAPID_SYNC_URL=${RAPID_SYNC_URL}
+      - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
       - MEV_NODE=${MEV_NODE}
@@ -40,7 +40,7 @@ services:
       - EMBEDDED_VC=false
       - VC_EXTRAS=
       - DOPPELGANGER=false
-      - ARCHIVE_NODE=${ARCHIVE_NODE:-false}
+      - ARCHIVE_NODE=${CL_ARCHIVE_NODE:-false}
       - GRAFFITI=
       - DEFAULT_GRAFFITI=true
       - WEB3SIGNER=false
@@ -56,7 +56,7 @@ services:
       default:
         aliases:
           - eth2
-          - ${NETWORK}-consensus
+          - ${CL_ALIAS:-${NETWORK}-consensus} # This allows multiple Eth Docker stacks all connected to the same bridge network
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh

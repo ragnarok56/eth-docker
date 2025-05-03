@@ -25,7 +25,7 @@ services:
       - JAVA_OPTS=${BESU_HEAP:--Xmx5g}
       - JWT_SECRET=${JWT_SECRET:-}
       - EL_EXTRAS=${EL_EXTRAS:-}
-      - ARCHIVE_NODE=${ARCHIVE_NODE:-}
+      - ARCHIVE_NODE=${EL_ARCHIVE_NODE:-}
       - NETWORK=${NETWORK}
       - IPV6=${IPV6:-false}
     volumes:
@@ -40,7 +40,7 @@ services:
       default:
         aliases:
           - eth1
-          - ${NETWORK}-execution # This allows multiple Eth Docker stacks all connected to the same central traefik
+          - ${EL_ALIAS:-${NETWORK}-execution} # This allows multiple Eth Docker stacks all connected to the same bridge network
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh

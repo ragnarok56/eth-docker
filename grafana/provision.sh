@@ -64,6 +64,16 @@ case "$CLIENT" in
         | jq '.templating.list[3].query |= "consensus" | .templating.list[4].query |= "validator"' \
         | jq 'walk(if . == "prometheus_local" then "Prometheus" else . end)' >"${__file}"
     ;;&
+  *vero* )
+    #  vero detailed
+    __url='https://raw.githubusercontent.com/serenita-org/vero/refs/heads/master/grafana/vero-detailed.json'
+    __file='/etc/grafana/provisioning/dashboards/vero-detailed.json'
+    wget -t 3 -T 10 -qcO - "${__url}" | jq 'walk(if . == "${datasource}" then "Prometheus" else . end)' >"${__file}"
+    #  vero simple
+    __url='https://raw.githubusercontent.com/serenita-org/vero/refs/heads/master/grafana/vero-simple.json'
+    __file='/etc/grafana/provisioning/dashboards/vero-simple.json'
+    wget -t 3 -T 10 -qcO - "${__url}" | jq 'walk(if . == "${datasource}" then "Prometheus" else . end)' >"${__file}"
+    ;;&
   *geth* )
     # geth_dashboard
     __url='https://gist.githubusercontent.com/karalabe/e7ca79abdec54755ceae09c08bd090cd/raw/3a400ab90f9402f2233280afd086cb9d6aac2111/dashboard.json'
@@ -112,15 +122,10 @@ case "$CLIENT" in
     wget -t 3 -T 10 -qcO - "${__url}" | jq 'walk(if . == "${DS_PROMETHEUS}" then "Prometheus" else . end)' >"${__file}"
     ;;&
   *ssv.yml* )
-    # SSV Operator Dashboard
-    __url='https://raw.githubusercontent.com/ssvlabs/ssv/main/monitoring/grafana/dashboard_ssv_operator_performance.json'
-    __file='/etc/grafana/provisioning/dashboards/ssv_operator_dashboard.json'
-    wget -t 3 -T 10 -qcO - "${__url}" | jq '.title = "SSV Operator Performance Dashboard"' \
-        | jq 'walk(if . == "${DS_PROMETHEUS}" then "Prometheus" else . end)' >"${__file}"
-    __url='https://raw.githubusercontent.com/ssvlabs/ssv/main/monitoring/grafana/dashboard_ssv_node.json'
-    __file='/etc/grafana/provisioning/dashboards/ssv_node_dashboard.json'
-    wget -t 3 -T 10 -qcO - "${__url}" | jq '.title = "SSV Node Dashboard"' \
-        | jq 'walk(if . == "${DS_PROMETHEUS}" then "Prometheus" else . end)' >"${__file}"
+    # SSV Operational Dashboard
+    __url='https://docs.ssv.network/files/SSV-Operational-dashboard.json'
+    __file='/etc/grafana/provisioning/dashboards/ssv_operational_dashboard.json'
+    wget -t 3 -T 10 -qcO - "${__url}" >"${__file}"
     ;;&
   *lido-obol.yml* )
     # Lido Obol Dashboard

@@ -1,5 +1,8 @@
 name: Test Lighthouse and Reth
-run-name: Test Lighthouse and Reth
+
+defaults:
+  run:
+    shell: bash
 
 on:
   push:
@@ -31,29 +34,13 @@ jobs:
           FEE_RECIPIENT=0xDccf8451070a86183eE70D330C4c43b686E9CF86
           var=FEE_RECIPIENT
           set_value_in_env
-      - name: Start Lighthouse/Reth
-        run: ./ethd up
-      - name: Pause for 30 seconds
-        run: sleep 30
-      - name: Test Reth
-        run: ./.github/check-service.sh execution
-      - name: Test Lighthouse CL
-        run: ./.github/check-service.sh consensus
-      - name: Test Lighthouse VC
-        run: ./.github/check-service.sh validator
+      - name: Test the stack
+        uses: ./.github/actions/test_client_stack
       - name: Set Lighthouse/Reth w/ VC
         run: |
           source ./.github/helper.sh
           COMPOSE_FILE=lighthouse-cl-only.yml:lighthouse-vc-only.yml:reth.yml
           var=COMPOSE_FILE
           set_value_in_env
-      - name: Start Lighthouse/Reth
-        run: ./ethd up
-      - name: Pause for 30 seconds
-        run: sleep 30
-      - name: Test Reth
-        run: ./.github/check-service.sh execution
-      - name: Test Lighthouse CL
-        run: ./.github/check-service.sh consensus
-      - name: Test Lighthouse VC
-        run: ./.github/check-service.sh validator
+      - name: Test the stack
+        uses: ./.github/actions/test_client_stack

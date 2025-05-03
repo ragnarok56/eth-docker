@@ -9,7 +9,7 @@ x-logging: &logging
 services:
   charon:
     restart: "unless-stopped"
-    image: obolnetwork/charon:${CHARON_VERSION:-latest}
+    image: obolnetwork/charon:${CHARON_TAG:-latest}
     volumes:
       - .eth:/opt/charon/.charon
     <<: *logging
@@ -26,6 +26,7 @@ services:
       - CHARON_FEATURE_SET_ENABLE=eager_double_linear,consensus_participate
       - CHARON_LOKI_ADDRESSES=${CHARON_LOKI_ADDRESSES:-http://loki:3100/loki/api/v1/push}
       - CHARON_LOKI_SERVICE=charon
+      - CHARON_NICKNAME=${OBOL_CHARON_NICKNAME:-}
     ports:
       - ${OBOL_P2P_PORT:-3610}:${OBOL_P2P_PORT:-3610}/tcp # P2P TCP libp2p
     healthcheck:
@@ -39,14 +40,14 @@ services:
   charon-create-enr:
     profiles: ["tools"]
     restart: "no"
-    image: obolnetwork/charon:${CHARON_VERSION:-latest}
+    image: obolnetwork/charon:${CHARON_TAG:-latest}
     command: create enr
     volumes:
       - .eth:/opt/charon/.charon
   charon-run-dkg:
     profiles: ["tools"]
     restart: "no"
-    image: obolnetwork/charon:${CHARON_VERSION:-latest}
+    image: obolnetwork/charon:${CHARON_TAG:-latest}
     volumes:
       - .eth:/opt/charon/.charon
     command: dkg --publish
@@ -61,7 +62,7 @@ services:
 
   validator-ejector:
    platform: linux/amd64
-   image: lidofinance/validator-ejector:${VALIDATOR_EJECTOR_VERSION:-1.5.0}
+   image: lidofinance/validator-ejector:${VALIDATOR_EJECTOR_TAG:-1.7.0}
    user: ":"
    volumes:
      - .eth/lido-ejector:/exitmessages
@@ -85,7 +86,7 @@ services:
      - metrics.instance=validator-ejector
 
   lido-dv-exit:
-    image: obolnetwork/lido-dv-exit:${LIDO_DV_EXIT_VERSION:-e8bee1f}
+    image: obolnetwork/lido-dv-exit:${LIDO_DV_EXIT_TAG:-latest}
     user: ":"
     volumes:
       - .eth/lido-ejector:/exitmessages
@@ -97,7 +98,7 @@ services:
       - LIDODVEXIT_EXIT_EPOCH=${LIDO_DV_EXIT_EXIT_EPOCH:-194048}
       - LIDODVEXIT_LOG_LEVEL=${LIDO_DV_EXIT_LOG_LEVEL:-info}
       - LIDODVEXIT_VALIDATOR_QUERY_CHUNK_SIZE=${LIDO_DV_EXIT_VALIDATOR_QUERY_CHUNK_SIZE:-5}
-    restart: on-failure
+    restart: unless-stopped
 
 networks:
   default:
