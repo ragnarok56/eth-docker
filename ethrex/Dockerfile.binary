@@ -1,0 +1,45 @@
+# hadolint global ignore=DL3007,DL3008,DL3059
+ARG DOCKER_TAG=latest
+ARG DOCKER_REPO=ghcr.io/lambdaclass/ethrex
+
+FROM ${DOCKER_REPO}:${DOCKER_TAG}
+
+# Unused, this is here to avoid build time complaints
+ARG BUILD_TARGET
+ARG SRC_REPO
+
+ARG USER=ethrex
+ARG UID=10001
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends \
+  ca-certificates \
+  tzdata \
+  gosu \
+  adduser \
+  bash \
+  git \
+  git-lfs \
+  wget \
+  jq \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
+
+# See https://stackoverflow.com/a/55757473/12429735
+RUN adduser \
+  --disabled-password \
+  --gecos "" \
+  --shell "/sbin/nologin" \
+  --uid "${UID}" \
+  "${USER}"
+
+RUN mkdir -p /var/lib/ee-secret && chown -R ${USER}:${USER} /var/lib/ee-secret && chmod 777 /var/lib/ee-secret
+RUN mkdir -p /var/lib/ethrex && chown -R ${USER}:${USER} /var/lib/ethrex && chmod -R 700 /var/lib/ethrex
+
+# Cannot assume buildkit, hence no chmod
+COPY --chown=${USER}:${USER} ./docker-entrypoint.sh /usr/local/bin/
+# Belt and suspenders
+RUN chmod -R 755 /usr/local/bin/*
+
+USER ${USER}
+
+ENTRYPOINT ["ethrex"]

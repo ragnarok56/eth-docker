@@ -36,12 +36,13 @@ services:
       - NETWORK=${NETWORK}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
+      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}  # Unused, here to avoid runtime errors in case of faulty logic
       - MEV_NODE=${MEV_NODE}
       - LOG_LEVEL=${LOG_LEVEL}
       - DOPPELGANGER=false
       - CL_EXTRAS=${CL_EXTRAS:-}
       - VC_EXTRAS=
-      - ARCHIVE_NODE=${CL_ARCHIVE_NODE:-}
+      - NODE_TYPE=${CL_NODE_TYPE:-pruned}
       - GRAFFITI=${GRAFFITI:-}
       - DEFAULT_GRAFFITI=true
       - WEB3SIGNER=false
@@ -53,7 +54,8 @@ services:
       default:
         aliases:
           - eth2
-          - ${CL_ALIAS:-${NETWORK}-consensus} # This allows multiple Eth Docker stacks all connected to the same bridge network
+          # This allows multiple Eth Docker stacks all connected to the same bridge network
+          - ${CL_ALIAS:-default-consensus}
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -63,7 +65,7 @@ services:
       - --status-bar=false
       - --tcp-port=${CL_P2P_PORT:-9000}
       - --udp-port=${CL_P2P_PORT:-9000}
-      - --max-peers=${CL_MAX_PEER_COUNT:-160}
+      - ${CL_MAX_PEER_COUNT:+--max-peers=${CL_MAX_PEER_COUNT}}
       - --el=${EL_NODE}
       - --jwt-secret=/var/lib/nimbus/ee-secret/jwtsecret
       - --rest
@@ -74,7 +76,6 @@ services:
       - --metrics-port=8008
       - --metrics-address=0.0.0.0
       - --suggested-fee-recipient=${FEE_RECIPIENT}
-      - --in-process-validators=false
     labels:
       - metrics.scrape=true
       - metrics.path=/metrics
@@ -96,6 +97,7 @@ services:
       - jwtsecret:/var/lib/nimbus/ee-secret
     environment:
       - MEV_BOOST=${MEV_BOOST}
+      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}
       - DOPPELGANGER=${DOPPELGANGER}
       - LOG_LEVEL=${LOG_LEVEL}
       - VC_EXTRAS=${VC_EXTRAS:-}
@@ -108,7 +110,7 @@ services:
     networks:
       default:
         aliases:
-          - ${VC_ALIAS}
+          - ${VC_ALIAS:-vc}
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
@@ -138,7 +140,10 @@ services:
     entrypoint:
       - /bin/sh
       - -c
-      - echo "Legacy exit not supported with Nimbus validator client. Please use ./ethd keys sign-exit instead, then submit to beaconcha.in or use ./ethd keys send-exit"
+      - >-
+        echo "Legacy exit not supported with Nimbus validator client. Please use
+        ./ethd keys sign-exit instead, then submit to beaconcha.in or use
+        ./ethd keys send-exit"
 
   validator-keys:
     profiles: ["tools"]
@@ -148,6 +153,8 @@ services:
     image: vc-utils:local
     pull_policy: never
     user: root
+    depends_on:
+      - validator
     volumes:
       - nimbus-vc-data:/var/lib/nimbus
       - ./.eth/validator_keys:/validator_keys
@@ -159,12 +166,10 @@ services:
       - WEB3SIGNER=${WEB3SIGNER:-false}
       - W3S_NODE=${W3S_NODE}
       - CL_NODE=${CL_NODE}
-    depends_on:
-      - validator
     entrypoint:
       - keymanager.sh
       - /var/lib/nimbus/api-token.txt
-      - ${VC_ALIAS}
+      - ${VC_ALIAS:-vc}
 
 volumes:
   nimbus-consensus-data:

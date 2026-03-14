@@ -1,28 +1,41 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [ "$(id -u)" = '0' ]; then
+if [[ "$(id -u)" -eq 0 ]]; then
   chown -R reth:reth /var/lib/reth
   exec gosu reth "${BASH_SOURCE[0]}" "$@"
 fi
 
-if [ -n "${JWT_SECRET}" ]; then
+
+# Because we're oh-so-clever with + substitution and maxpeers, we may have empty args. Remove them
+__strip_empty_args() {
+  local arg
+  __args=()
+  for arg in "$@"; do
+    if [[ -n "${arg}" ]]; then
+      __args+=("${arg}")
+    fi
+  done
+}
+
+
+if [[ -n "${JWT_SECRET}" ]]; then
   echo -n "${JWT_SECRET}" > /var/lib/reth/ee-secret/jwtsecret
   echo "JWT secret was supplied in .env"
 fi
 
 if [[ ! -f /var/lib/reth/ee-secret/jwtsecret ]]; then
   echo "Generating JWT secret"
-  __secret1=$(head -c 8 /dev/urandom | od -A n -t u8 | tr -d '[:space:]' | sha256sum | head -c 32)
-  __secret2=$(head -c 8 /dev/urandom | od -A n -t u8 | tr -d '[:space:]' | sha256sum | head -c 32)
-  echo -n "${__secret1}""${__secret2}" > /var/lib/reth/ee-secret/jwtsecret
+  secret1=$(head -c 8 /dev/urandom | od -A n -t u8 | tr -d '[:space:]' | sha256sum | head -c 32)
+  secret2=$(head -c 8 /dev/urandom | od -A n -t u8 | tr -d '[:space:]' | sha256sum | head -c 32)
+  echo -n "${secret1}""${secret2}" > /var/lib/reth/ee-secret/jwtsecret
 fi
 
-if [[ -O "/var/lib/reth/ee-secret" ]]; then
+if [[ -O /var/lib/reth/ee-secret ]]; then
   # In case someone specifies JWT_SECRET but it's not a distributed setup
   chmod 777 /var/lib/reth/ee-secret
 fi
-if [[ -O "/var/lib/reth/ee-secret/jwtsecret" ]]; then
+if [[ -O /var/lib/reth/ee-secret/jwtsecret ]]; then
   chmod 666 /var/lib/reth/ee-secret/jwtsecret
 fi
 
@@ -34,7 +47,7 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
   # For want of something more amazing, let's just fail if git fails to pull this
   set -e
-  if [ ! -d "/var/lib/reth/testnet/${config_dir}" ]; then
+  if [[ ! -d "/var/lib/reth/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/reth/testnet
     cd /var/lib/reth/testnet
     git init --initial-branch="${branch}"
@@ -75,41 +88,98 @@ case ${LOG_LEVEL} in
 esac
 
 __static=""
-if [ -n "${STATIC_DIR}" ] && [ ! "${STATIC_DIR}" = ".nada" ]; then
+if [[ -n "${STATIC_DIR}" && ! "${STATIC_DIR}" = ".nada" ]]; then
   echo "Using separate static files directory at ${STATIC_DIR}."
   __static="--datadir.static-files /var/lib/static"
 fi
 
-if [ "${ARCHIVE_NODE}" = "true" ]; then
-  echo "Reth archive node without pruning"
-else
-  if [ ! -f "/var/lib/reth/reth.toml" ]; then  # Configure ssv, rocketpool, stakewise contracts
-# Word splitting is desired for the command line parameters
+__prune="--block-interval 5 --prune.senderrecovery.full --prune.accounthistory.distance 10064 --prune.storagehistory.distance 10064"
+case "${NODE_TYPE}" in
+  archive)
+    echo "Reth archive node without pruning"
+    __prune=""
+    ;;
+  full)
+    echo "Reth full node without history expiry"
+    prune+=" --prune.receipts.before 0"
+    ;;
+  pre-merge-expiry)
+    prune+=" --prune.transactionlookup.distance 10064"
+    case ${NETWORK} in
+      mainnet|sepolia)
+        echo "Reth minimal node with pre-merge history expiry"
+        __prune+=" --prune.bodies.pre-merge --prune.receipts.pre-merge"
+        ;;
+      *)
+        echo "There is no pre-merge history for ${NETWORK} network, \"pre-merge-expiry\" has no effect."
+        __prune+=" --prune.receipts.before 0"
+        ;;
+    esac
+    ;;
+  pre-cancun-expiry)
+    prune+=" --prune.transactionlookup.distance 10064"
+    case "${NETWORK}" in
+      mainnet)
+        echo "Reth minimal node with pre-Cancun history expiry"
+        __prune+=" --prune.bodies.before 19426587 --prune.receipts.before 19426587"
+        ;;
+      sepolia)
+        echo "Reth minimal node with pre-Cancun history expiry"
+        __prune+=" --prune.bodies.before 5187023 --prune.receipts.before 5187023"
+        ;;
+      *)
+        echo "There is no pre-Cancun history for ${NETWORK} network, \"pre-cancun-expiry\" has no effect."
+        __prune+=" --prune.receipts.before 0"
+        ;;
+    esac
+    ;;
+  rolling-expiry)
+    echo "Reth minimal node with rolling history expiry, keeps 1 year."
+    # 365 days = 82125 epochs = 2628000 slots / blocks
+    __prune+=" --prune.transactionlookup.distance 10064 --prune.bodies.distance 2628000 --prune.receipts.distance 2628000"
+    ;;
+  aggressive-expiry)
+    echo "Reth minimal node with aggressive expiry"
+    __prune="--minimal"
+    ;;
+  *)
+    echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Reth implementation."
+    sleep 30
+    exit 1
+    ;;
+esac
+
+if [[ -n "${__prune}" ]]; then
+  echo "Pruning parameters: ${__prune}"
+fi
+
+if [[ -f /var/lib/reth/repair-trie ]]; then
+  if [[ "${NETWORK}" =~ ^https?:// ]]; then
+    echo "Can't repair database on custom network"
+    rm "var/lib/reth/repair-trie"
+  else
+    rm "var/lib/reth/repair-trie"  # Remove first in case this panics
+    echo "Running Reth database trie repair. This may take up to 2 hours"
 # shellcheck disable=SC2086
-    reth init ${__network} --datadir /var/lib/reth ${__static}
-    cat <<EOF >> /var/lib/reth/reth.toml
-
-[prune]
-block_interval = 5
-
-[prune.segments]
-sender_recovery = "full"
-
-[prune.segments.receipts]
-before = 0
-
-[prune.segments.account_history]
-distance = 10064
-
-[prune.segments.storage_history]
-distance = 10064
-EOF
+    reth db --chain "${NETWORK}" --datadir /var/lib/reth ${__static} repair-trie
   fi
 fi
 
-if [ -f /var/lib/reth/prune-marker ]; then
+__strip_empty_args "$@"
+set -- "${__args[@]}"
+
+# Traces
+if [[ "${COMPOSE_FILE}" =~ (grafana\.yml|grafana-rootless\.yml) ]]; then
+  __trace="--tracing-otlp=http://tempo:4318/v1/traces"
+  export OTEL_EXPORTER_OTLP_INSECURE=true
+  export OTEL_SERVICE_NAME=reth
+else
+  __trace=""
+fi
+
+if [[ -f /var/lib/reth/prune-marker ]]; then
   rm -f /var/lib/reth/prune-marker
-  if [ "${ARCHIVE_NODE}" = "true" ]; then
+  if [[ "${NODE_TYPE}" = "archive" ]]; then
     echo "Reth is an archive node. Not attempting to prune database: Aborting."
     exit 1
   fi
@@ -119,5 +189,5 @@ if [ -f /var/lib/reth/prune-marker ]; then
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__verbosity} ${__static} ${EL_EXTRAS}
+  exec "$@" ${__network} ${__verbosity} ${__static} ${__prune} ${__trace} ${EL_EXTRAS}
 fi

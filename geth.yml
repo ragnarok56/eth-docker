@@ -25,10 +25,13 @@ services:
       - JWT_SECRET=${JWT_SECRET:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - EL_EXTRAS=${EL_EXTRAS:-}
-      - ARCHIVE_NODE=${EL_ARCHIVE_NODE:-}
+      - NODE_TYPE=${EL_NODE_TYPE:-pre-merge-expiry}
       - NETWORK=${NETWORK}
       - IPV6=${IPV6:-false}
       - ANCIENT_DIR=${ANCIENT_DIR:-}
+      - ERA_URL=${ERA_URL:-}
+      - MAX_BLOBS=${MAX_BLOBS:-}
+      - COMPOSE_FILE=${COMPOSE_FILE}
     volumes:
       - geth-eth1-data:/var/lib/goethereum
       - geth-el-data:/var/lib/geth
@@ -42,7 +45,8 @@ services:
       default:
         aliases:
           - eth1
-          - ${EL_ALIAS:-${NETWORK}-execution} # This allows multiple Eth Docker stacks all connected to the same bridge network
+          # This allows multiple Eth Docker stacks all connected to the same bridge network
+          - ${EL_ALIAS:-default-execution}
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -73,14 +77,24 @@ services:
       - --authrpc.port
       - ${EE_PORT:-8551}
       - --authrpc.vhosts=*
-      - --maxpeers
-      - ${EL_MAX_PEER_COUNT:-50}
+      - ${EL_MAX_PEER_COUNT:+--maxpeers}
+      - ${EL_MAX_PEER_COUNT:+${EL_MAX_PEER_COUNT}}
     labels:
       - metrics.scrape=true
       - metrics.path=/debug/metrics/prometheus
       - metrics.port=6060
       - metrics.instance=execution
       - metrics.network=${NETWORK}
+
+  set-prune-marker:
+    profiles: ["tools"]
+    image: alpine:3
+    user: "10001:10001"
+    restart: "no"
+    volumes:
+      - geth-el-data:/var/lib/geth
+    entrypoint: ["/bin/sh", "-c"]
+    command: /bin/sh
 
 volumes:
   geth-el-data:

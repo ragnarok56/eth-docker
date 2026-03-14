@@ -1,3 +1,4 @@
+# hadolint global ignore=DL3007,DL3008,DL3059
 ARG DOCKER_TAG=latest
 ARG DOCKER_REPO=ghcr.io/paradigmxyz/reth
 
@@ -14,8 +15,13 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install 
   ca-certificates \
   tzdata \
   gosu \
+  adduser \
+  bash \
   git \
   git-lfs \
+  wget \
+  jq \
+  && gosu nobody true \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 

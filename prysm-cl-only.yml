@@ -11,11 +11,11 @@ x-build: &prysm-build
   dockerfile: ${PRYSM_DOCKERFILE}
   args:
     - BUILD_TARGET=${PRYSM_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
-    - SRC_REPO=${PRYSM_SRC_REPO:-https://github.com/prysmaticlabs/prysm}
+    - SRC_REPO=${PRYSM_SRC_REPO:-https://github.com/offchainlabs/prysm}
     - DOCKER_TAG=${PRYSM_DOCKER_TAG:-stable}
     - DOCKER_VC_TAG=${PRYSM_DOCKER_VC_TAG:-stable}
-    - DOCKER_REPO=${PRYSM_DOCKER_REPO:-gcr.io/prysmaticlabs/prysm/beacon-chain}
-    - DOCKER_VC_REPO=${PRYSM_DOCKER_VC_REPO:-gcr.io/prysmaticlabs/prysm/validator}
+    - DOCKER_REPO=${PRYSM_DOCKER_REPO:-gcr.io/offchainlabs/prysm/beacon-chain}
+    - DOCKER_VC_REPO=${PRYSM_DOCKER_VC_REPO:-gcr.io/offchainlabs/prysm/validator}
 
 services:
   consensus:
@@ -37,7 +37,7 @@ services:
       - MEV_BOOST=${MEV_BOOST}
       - MEV_NODE=${MEV_NODE}
       - CL_EXTRAS=${CL_EXTRAS:-}
-      - ARCHIVE_NODE=${CL_ARCHIVE_NODE:-}
+      - NODE_TYPE=${CL_NODE_TYPE:-pruned}
       - NETWORK=${NETWORK}
     ports:
       - ${HOST_IP:-}:${PRYSM_PORT}:${PRYSM_PORT}/tcp
@@ -47,7 +47,8 @@ services:
       default:
         aliases:
           - eth2
-          - ${CL_ALIAS:-${NETWORK}-consensus} # This allows multiple Eth Docker stacks all connected to the same bridge network
+          # This allows multiple Eth Docker stacks all connected to the same bridge network
+          - ${CL_ALIAS:-default-consensus}
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -75,8 +76,8 @@ services:
       - ${PRYSM_UDP_PORT}
       - --p2p-quic-port
       - ${CL_QUIC_PORT}
-      - --p2p-max-peers
-      - ${CL_MAX_PEER_COUNT:-70}
+      - ${CL_MAX_PEER_COUNT:+--p2p-max-peers}
+      - ${CL_MAX_PEER_COUNT:+${CL_MAX_PEER_COUNT}}
       - --verbosity
       - ${LOG_LEVEL}
       - --accept-terms-of-use

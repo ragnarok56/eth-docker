@@ -1,28 +1,41 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-if [ "$(id -u)" = '0' ]; then
+if [[ "$(id -u)" -eq 0 ]]; then
   chown -R besu:besu /var/lib/besu
   exec gosu besu "${BASH_SOURCE[0]}" "$@"
 fi
 
-if [ -n "${JWT_SECRET}" ]; then
+
+# Because we're oh-so-clever with + substitution and maxpeers, we may have empty args. Remove them
+__strip_empty_args() {
+  local arg
+  __args=()
+  for arg in "$@"; do
+    if [[ -n "${arg}" ]]; then
+      __args+=("${arg}")
+    fi
+  done
+}
+
+
+if [[ -n "${JWT_SECRET}" ]]; then
   echo -n "${JWT_SECRET}" > /var/lib/besu/ee-secret/jwtsecret
   echo "JWT secret was supplied in .env"
 fi
 
 if [[ ! -f /var/lib/besu/ee-secret/jwtsecret ]]; then
   echo "Generating JWT secret"
-  __secret1=$(head -c 8 /dev/urandom | od -A n -t u8 | tr -d '[:space:]' | sha256sum | head -c 32)
-  __secret2=$(head -c 8 /dev/urandom | od -A n -t u8 | tr -d '[:space:]' | sha256sum | head -c 32)
-  echo -n "${__secret1}""${__secret2}" > /var/lib/besu/ee-secret/jwtsecret
+  secret1=$(head -c 8 /dev/urandom | od -A n -t u8 | tr -d '[:space:]' | sha256sum | head -c 32)
+  secret2=$(head -c 8 /dev/urandom | od -A n -t u8 | tr -d '[:space:]' | sha256sum | head -c 32)
+  echo -n "${secret1}""${secret2}" > /var/lib/besu/ee-secret/jwtsecret
 fi
 
-if [[ -O "/var/lib/besu/ee-secret" ]]; then
+if [[ -O /var/lib/besu/ee-secret ]]; then
   # In case someone specifies JWT_SECRET but it's not a distributed setup
   chmod 777 /var/lib/besu/ee-secret
 fi
-if [[ -O "/var/lib/besu/ee-secret/jwtsecret" ]]; then
+if [[ -O /var/lib/besu/ee-secret/jwtsecret ]]; then
   chmod 666 /var/lib/besu/ee-secret/jwtsecret
 fi
 
@@ -34,7 +47,7 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
   # For want of something more amazing, let's just fail if git fails to pull this
   set -e
-  if [ ! -d "/var/lib/besu/testnet/${config_dir}" ]; then
+  if [[ ! -d "/var/lib/besu/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/besu/testnet
     cd /var/lib/besu/testnet
     git init --initial-branch="${branch}"
@@ -50,39 +63,84 @@ else
   __network="--network ${NETWORK}"
 fi
 
-if [ "${ARCHIVE_NODE}" = "true" ]; then
-  echo "Besu archive node without pruning"
-  __prune="--data-storage-format=FOREST --sync-mode=FULL"
-else
-  __prune=""
-fi
+case "${NODE_TYPE}" in
+  archive)
+    echo "Besu archive node without pruning"
+    __prune="--data-storage-format=FOREST --sync-mode=FULL"
+    ;;
+  full)
+    echo "Besu full node without history expiry"
+    __prune="--snapsync-synchronizer-pre-checkpoint-headers-only-enabled=false --snapsync-server-enabled"
+    ;;
+  pre-merge-expiry)
+    case "${NETWORK}" in
+      mainnet|sepolia)
+        echo "Besu minimal node with pre-merge history expiry"
+        __prune="--snapsync-server-enabled"
+        ;;
+      *)
+        echo "There is no pre-merge history for ${NETWORK} network, \"pre-merge-expiry\" has no effect."
+        __prune=""
+        ;;
+    esac
+    ;;
+  rolling-expiry)
+    echo "Besu minimal node with rolling history expiry, keeps 1 year."
+    # 365 days = 82125 epochs = 2628000 slots / blocks
+    __prune="--snapsync-server-enabled --Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=2628000"
+    ;;
+  aggressive-expiry)
+    echo "Besu minimal node with aggressive expiry"
+    __prune="--snapsync-server-enabled --Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=113056"
+    ;;
+  *)
+    echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Besu implementation."
+    sleep 30
+    exit 1
+    ;;
+esac
 
 # New or old datadir
-if [ -d /var/lib/besu-og/database ]; then
+if [[ -d /var/lib/besu-og/database ]]; then
   __datadir="--data-path /var/lib/besu-og"
 else
   __datadir="--data-path /var/lib/besu"
 fi
 
+# Track at https://github.com/orgs/hyperledger/projects/111?query=sort%3Aupdated-desc+is%3Aopen
+# and issues #4089 and #9686. Discv5 / IPv6 currently not implemented in Besu as of Jan 2026
 # DiscV5 for IPV6
-if [ "${IPV6:-false}" = "true" ]; then
-  echo "Configuring Besu for discv5 for IPv6 advertisements"
-  __ipv6="--Xv5-discovery-enabled"
-else
-  __ipv6=""
+#if [[ "${IPV6:-false}" = "true" ]]; then
+#  echo "Configuring Besu for discv5 for IPv6 advertisements"
+#  __ipv6="--Xv5-discovery-enabled"
+#else
+#  __ipv6=""
+#fi
+
+__strip_empty_args "$@"
+set -- "${__args[@]}"
+
+# Traces
+if [[ "${COMPOSE_FILE}" =~ (grafana\.yml|grafana-rootless\.yml) ]]; then
+  export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+  export OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
+  export OTEL_EXPORTER_OTLP_INSECURE=true
+  export OTEL_SERVICE_NAME=besu
 fi
 
-if [ -f /var/lib/besu/prune-marker ]; then
+if [[ -f /var/lib/besu/prune-marker ]]; then
   rm -f /var/lib/besu/prune-marker
-  if [ "${ARCHIVE_NODE}" = "true" ]; then
+  if [[ "${NODE_TYPE}" = "archive" ]]; then
     echo "Besu is an archive node. Not attempting to prune trie-logs: Aborting."
     exit 1
   fi
+  echo "Pruning Besu trie-logs"
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__datadir} ${__network} ${__prune} ${EL_EXTRAS} storage trie-log prune
+  exec /opt/besu/bin/besu ${__datadir} ${__network} storage trie-log prune
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__datadir} ${__network} ${__ipv6} ${__prune} ${EL_EXTRAS}
+#  exec "$@" ${__datadir} ${__network} ${__ipv6} ${__prune} ${EL_EXTRAS}
+  exec "$@" ${__datadir} ${__network} ${__prune} ${EL_EXTRAS}
 fi

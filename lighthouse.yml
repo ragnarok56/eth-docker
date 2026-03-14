@@ -17,16 +17,24 @@ x-build: &lh-build
     - DOCKER_REPO=${LH_DOCKER_REPO:-sigp/lighthouse}
 
 services:
-  consensus:
-    restart: "unless-stopped"
+  lighthouse-builder:
+    restart: "no"
     build:
       <<: *lh-build
     image: lighthouse:local
     pull_policy: never
+    entrypoint: ["true"]
+
+  consensus:
+    restart: "unless-stopped"
+    image: lighthouse:local
+    pull_policy: never
     user: lhconsensus
     stop_grace_period: 1m
+    depends_on:
+      lighthouse-builder:
+        condition: service_completed_successfully
     volumes:
-      - lhbeacon-data:/var/lib/lighthouse-og
       - lhconsensus-data:/var/lib/lighthouse
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/lighthouse/beacon/ee-secret
@@ -38,11 +46,13 @@ services:
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - CL_EXTRAS=${CL_EXTRAS:-}
-      - ARCHIVE_NODE=${CL_ARCHIVE_NODE:-false}
+      - NODE_TYPE=${CL_NODE_TYPE:-pruned}
+      - EL_NODE=${EL_NODE}
       - IPV6=${IPV6:-false}
       - CL_P2P_PORT=${CL_P2P_PORT:-9000}
       - CL_QUIC_PORT=${CL_QUIC_PORT:-9001}
       - NETWORK=${NETWORK}
+      - COMPOSE_FILE=${COMPOSE_FILE}
     ports:
       - ${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
       - ${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
@@ -51,7 +61,8 @@ services:
       default:
         aliases:
           - eth2
-          - ${CL_ALIAS:-${NETWORK}-consensus} # This allows multiple Eth Docker stacks all connected to the same bridge network
+          # This allows multiple Eth Docker stacks all connected to the same bridge network
+          - ${CL_ALIAS:-default-consensus}
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -72,12 +83,8 @@ services:
       - ${CL_P2P_PORT:-9000}
       - --quic-port
       - ${CL_QUIC_PORT:-9001}
-      - --target-peers
-      - ${CL_MAX_PEER_COUNT:-100}
-      - --execution-endpoint
-      - ${EL_NODE}
-      - --execution-jwt
-      - /var/lib/lighthouse/beacon/ee-secret/jwtsecret
+      - ${CL_MAX_PEER_COUNT:+--target-peers}
+      - ${CL_MAX_PEER_COUNT:+${CL_MAX_PEER_COUNT}}
       - --debug-level=${LOG_LEVEL}
       - --metrics
       - --metrics-address
@@ -93,13 +100,20 @@ services:
 
   validator:
     restart: "unless-stopped"
-    build:
-      <<: *lh-build
     image: lighthouse:local
     pull_policy: never
     user: lhvalidator
+    depends_on:
+      consensus:
+        condition: service_started
+      lighthouse-builder:
+        condition: service_completed_successfully
+    volumes:
+      - lhvalidator-data:/var/lib/lighthouse
+      - /etc/localtime:/etc/localtime:ro
     environment:
       - MEV_BOOST=${MEV_BOOST}
+      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - DOPPELGANGER=${DOPPELGANGER}
@@ -108,13 +122,10 @@ services:
       - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
       - NETWORK=${NETWORK}
       - ENABLE_DIST_ATTESTATION_AGGR=${ENABLE_DIST_ATTESTATION_AGGR:-false}
-    volumes:
-      - lhvalidator-data:/var/lib/lighthouse
-      - /etc/localtime:/etc/localtime:ro
     networks:
       default:
         aliases:
-          - ${VC_ALIAS}
+          - ${VC_ALIAS:-vc}
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
@@ -139,8 +150,6 @@ services:
       - --unencrypted-http-transport
       - --suggested-fee-recipient
       - ${FEE_RECIPIENT}
-    depends_on:
-      - consensus
     labels:
       - traefik.enable=true
       - traefik.http.routers.${VC_HOST:-vc}.service=${VC_HOST:-vc}
@@ -157,13 +166,16 @@ services:
   validator-exit:
     profiles: ["tools"]
     restart: "no"
-    build:
-      <<: *lh-build
     image: lighthouse:local
     pull_policy: never
     # Keys have 440 permissions. Root copies and chowns them,
     # then switches to user lhvalidator
     user: root
+    depends_on:
+      consensus:
+        condition: service_started
+      lighthouse-builder:
+        condition: service_completed_successfully
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - ./.eth/validator_keys:/validator_keys
@@ -182,8 +194,6 @@ services:
       - ${NETWORK}
       - --debug-level=${LOG_LEVEL}
       - --keystore
-    depends_on:
-      - consensus
 
   validator-keys:
     profiles: ["tools"]
@@ -197,6 +207,8 @@ services:
     # 1000. The UID has to be able to write .eth/validator_keys
     # for the "keys delete" command.
     user: root
+    depends_on:
+      - validator
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - ./.eth/validator_keys:/validator_keys
@@ -208,12 +220,10 @@ services:
       - WEB3SIGNER=${WEB3SIGNER:-false}
       - W3S_NODE=${W3S_NODE}
       - CL_NODE=${CL_NODE}
-    depends_on:
-      - validator
     entrypoint:
       - keymanager.sh
       - /var/lib/lighthouse/validators/api-token.txt
-      - ${VC_ALIAS}
+      - ${VC_ALIAS:-vc}
 
   set-cl-prune-marker:
     profiles: ["tools"]
@@ -222,11 +232,10 @@ services:
     restart: "no"
     volumes:
       - lhconsensus-data:/var/lib/lighthouse
-    entrypoint: ["/bin/sh","-c"]
+    entrypoint: ["/bin/sh", "-c"]
     command: /bin/sh
 
 volumes:
-  lhbeacon-data:
   lhconsensus-data:
   lhvalidator-data:
   jwtsecret:

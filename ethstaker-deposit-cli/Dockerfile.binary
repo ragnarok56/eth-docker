@@ -1,5 +1,6 @@
+# hadolint global ignore=DL3007,DL3008,DL3059
 ARG DOCKER_TAG=latest
-ARG DOCKER_REPO=ghcr.io/eth-educators/ethstaker-deposit-cli
+ARG DOCKER_REPO=ghcr.io/ethstaker/ethstaker-deposit-cli
 
 FROM ${DOCKER_REPO}:${DOCKER_TAG}
 
@@ -8,6 +9,14 @@ ARG SRC_REPO
 
 ARG USER=depcli
 ARG UID=1000
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends \
+  gosu \
+  adduser \
+  bash \
+  && gosu nobody true \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
 
 # See https://stackoverflow.com/a/55757473/12429735RUN
 RUN adduser \
@@ -18,8 +27,6 @@ RUN adduser \
     --no-create-home \
     --uid "${UID}" \
     "${USER}"
-
-RUN apt-get update && apt-get install -y gosu
 
 WORKDIR /app
 

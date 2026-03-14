@@ -25,9 +25,10 @@ services:
       - JAVA_OPTS=${BESU_HEAP:--Xmx5g}
       - JWT_SECRET=${JWT_SECRET:-}
       - EL_EXTRAS=${EL_EXTRAS:-}
-      - ARCHIVE_NODE=${EL_ARCHIVE_NODE:-}
+      - NODE_TYPE=${EL_NODE_TYPE:-pre-merge-expiry}
       - NETWORK=${NETWORK}
       - IPV6=${IPV6:-false}
+      - COMPOSE_FILE=${COMPOSE_FILE}
     volumes:
       - besu-el-data:/var/lib/besu
       - besu-eth1-data:/var/lib/besu-og
@@ -40,7 +41,8 @@ services:
       default:
         aliases:
           - eth1
-          - ${EL_ALIAS:-${NETWORK}-execution} # This allows multiple Eth Docker stacks all connected to the same bridge network
+          # This allows multiple Eth Docker stacks all connected to the same bridge network
+          - ${EL_ALIAS:-default-execution}
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -60,8 +62,8 @@ services:
       - 0.0.0.0
       - --rpc-ws-port
       - ${EL_WS_PORT:-8546}
-      - --max-peers
-      - ${EL_MAX_PEER_COUNT:-25}
+      - ${EL_MAX_PEER_COUNT:+--max-peers}
+      - ${EL_MAX_PEER_COUNT:+${EL_MAX_PEER_COUNT}}
       - --host-allowlist=*
       - --engine-host-allowlist=*
       - --engine-jwt-secret=/var/lib/besu/ee-secret/jwtsecret
@@ -87,8 +89,8 @@ services:
     user: "10001:10001"
     restart: "no"
     volumes:
-      - besu-eth1-data:/var/lib/besu
-    entrypoint: ["/bin/sh","-c"]
+      - besu-el-data:/var/lib/besu
+    entrypoint: ["/bin/sh", "-c"]
     command: /bin/sh
 
 volumes:

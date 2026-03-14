@@ -15,7 +15,7 @@ services:
       args:
         - BUILD_TARGET=${NIMEL_SRC_BUILD_TARGET:-master}
         - SRC_REPO=${NIMEL_SRC_REPO:-https://github.com/status-im/nimbus-eth1}
-        - DOCKER_TAG=${NIMEL_DOCKER_TAG:-multiarch-latest}
+        - DOCKER_TAG=${NIMEL_DOCKER_TAG:-master}
         - DOCKER_REPO=${NIMEL_DOCKER_REPO:-statusim/nimbus-eth1}
     stop_grace_period: 5m
     stop_signal: SIGINT
@@ -25,8 +25,10 @@ services:
     environment:
       - JWT_SECRET=${JWT_SECRET:-}
       - EL_EXTRAS=${EL_EXTRAS:-}
-      - ARCHIVE_NODE=${EL_ARCHIVE_NODE:-}
+      - NODE_TYPE=${EL_NODE_TYPE:-pre-merge-expiry}
       - NETWORK=${NETWORK}
+      - ERA_URL=${ERA_URL:-}
+      - MAX_BLOBS=${MAX_BLOBS:-}
     volumes:
       - nimbus-el-data:/var/lib/nimbus
       - /etc/localtime:/etc/localtime:ro
@@ -38,7 +40,8 @@ services:
       default:
         aliases:
           - eth1
-          - ${EL_ALIAS:-${NETWORK}-execution} # This allows multiple Eth Docker stacks all connected to the same bridge network
+          # This allows multiple Eth Docker stacks all connected to the same bridge network
+          - ${EL_ALIAS:-default-execution}
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -58,33 +61,14 @@ services:
       - --engine-api-port=${EE_PORT:-8551}
       - --engine-api-address=0.0.0.0
       - --engine-api-ws
-      - --max-peers=${EL_MAX_PEER_COUNT:-25}
+      - ${EL_MAX_PEER_COUNT:+--max-peers=${EL_MAX_PEER_COUNT}}
       - --log-level=${LOG_LEVEL}
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.${EL_HOST:-el}.service=${EL_HOST:-el}
-      - traefik.http.routers.${EL_HOST:-el}.entrypoints=websecure
-      - traefik.http.routers.${EL_HOST:-el}.rule=Host(`${EL_HOST:-el}.${DOMAIN}`)
-      - traefik.http.routers.${EL_HOST:-el}.tls.certresolver=letsencrypt
-      - traefik.http.routers.${EL_HOST:-el}lb.service=${EL_HOST:-el}
-      - traefik.http.routers.${EL_HOST:-el}lb.entrypoints=websecure
-      - traefik.http.routers.${EL_HOST:-el}lb.rule=Host(`${EL_LB:-el-lb}.${DOMAIN}`)
-      - traefik.http.routers.${EL_HOST:-el}lb.tls.certresolver=letsencrypt
-      - traefik.http.services.${EL_HOST:-el}.loadbalancer.server.port=${EL_RPC_PORT:-8545}
-      - traefik.http.routers.${EL_WS_HOST:-elws}.service=${EL_WS_HOST:-elws}
-      - traefik.http.routers.${EL_WS_HOST:-elws}.entrypoints=websecure
-      - traefik.http.routers.${EL_WS_HOST:-elws}.rule=Host(`${EL_WS_HOST:-elws}.${DOMAIN}`)
-      - traefik.http.routers.${EL_WS_HOST:-elws}.tls.certresolver=letsencrypt
-      - traefik.http.routers.${EL_WS_HOST:-elws}lb.service=${EL_WS_HOST:-elws}
-      - traefik.http.routers.${EL_WS_HOST:-elws}lb.entrypoints=websecure
-      - traefik.http.routers.${EL_WS_HOST:-elws}lb.rule=Host(`${EL_WS_LB:-elws-lb}.${DOMAIN}`)
-      - traefik.http.routers.${EL_WS_HOST:-elws}lb.tls.certresolver=letsencrypt
-      - traefik.http.services.${EL_WS_HOST:-elws}.loadbalancer.server.port=${EL_WS_PORT:-8546}
-      - traefik.http.routers.${EE_HOST:-ee}.service=${EE_HOST:-ee}
-      - traefik.http.routers.${EE_HOST:-ee}.entrypoints=websecure
-      - traefik.http.routers.${EE_HOST:-ee}.rule=Host(`${EE_HOST:-ee}.${DOMAIN}`)
-      - traefik.http.routers.${EE_HOST:-ee}.tls.certresolver=letsencrypt
-      - traefik.http.services.${EE_HOST:-ee}.loadbalancer.server.port=${EE_PORT:-8551}
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=6060
+      - metrics.instance=execution
+      - metrics.network=${NETWORK}
 
 volumes:
   nimbus-el-data:

@@ -26,13 +26,14 @@ services:
       - JWT_SECRET=${JWT_SECRET:-}
       - EL_EXTRAS=${EL_EXTRAS:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - ARCHIVE_NODE=${EL_ARCHIVE_NODE:-}
+      - NODE_TYPE=${EL_NODE_TYPE:-pre-merge-expiry}
       - NETWORK=${NETWORK}
       - STATIC_DIR=${ANCIENT_DIR}
+      - COMPOSE_FILE=${COMPOSE_FILE}
       # Make this RUST_LOG=${LOG_LEVEL:-info},engine=trace when requiring deep debug
       # RPC debug can be done with jsonrpsee=trace or jsonrpsee::target=trace for a specific target
-      - RUST_LOG=${LOG_LEVEL:-info}
-      - RUST_LOG_STYLE=never
+      # - RUST_LOG=${LOG_LEVEL:-info},engine=trace
+      # - RUST_LOG_STYLE=never
     volumes:
       - reth-el-data:/var/lib/reth
       - ${ANCIENT_DIR:-.nada}:/var/lib/static
@@ -46,7 +47,8 @@ services:
       default:
         aliases:
           - eth1
-          - ${EL_ALIAS:-${NETWORK}-execution} # This allows multiple Eth Docker stacks all connected to the same bridge network
+          # This allows multiple Eth Docker stacks all connected to the same bridge network
+          - ${EL_ALIAS:-default-execution}
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -83,8 +85,8 @@ services:
       - ${EE_PORT:-8551}
       - --authrpc.jwtsecret
       - /var/lib/reth/ee-secret/jwtsecret
-      - --max-outbound-peers
-      - ${EL_MAX_PEER_COUNT:-100}
+      - ${EL_MAX_PEER_COUNT:+--max-peers}
+      - ${EL_MAX_PEER_COUNT:+${EL_MAX_PEER_COUNT}}
     labels:
       - metrics.scrape=true
       - metrics.path=/metrics
@@ -99,7 +101,7 @@ services:
     restart: "no"
     volumes:
       - reth-el-data:/var/lib/reth
-    entrypoint: ["/bin/sh","-c"]
+    entrypoint: ["/bin/sh", "-c"]
     command: /bin/sh
 
 volumes:

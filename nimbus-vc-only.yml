@@ -32,6 +32,7 @@ services:
       - jwtsecret:/var/lib/nimbus/ee-secret
     environment:
       - MEV_BOOST=${MEV_BOOST}
+      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}
       - CL_NODE=${CL_NODE}
       - DOPPELGANGER=${DOPPELGANGER}
       - LOG_LEVEL=${LOG_LEVEL}
@@ -44,7 +45,7 @@ services:
     networks:
       default:
         aliases:
-          - ${VC_ALIAS}
+          - ${VC_ALIAS:-vc}
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
@@ -74,7 +75,10 @@ services:
     entrypoint:
       - /bin/sh
       - -c
-      - echo "Legacy exit not supported with Nimbus validator client. Please use ./ethd keys sign-exit instead, then submit to beaconcha.in or use ./ethd keys send-exit"
+      - >-
+        echo "Legacy exit not supported with Nimbus validator client. Please use
+        ./ethd keys sign-exit instead, then submit to beaconcha.in or use
+        ./ethd keys send-exit"
 
   validator-keys:
     profiles: ["tools"]
@@ -84,6 +88,8 @@ services:
     image: vc-utils:local
     pull_policy: never
     user: root
+    depends_on:
+      - validator
     volumes:
       - nimbus-vc-data:/var/lib/nimbus
       - ./.eth/validator_keys:/validator_keys
@@ -95,12 +101,10 @@ services:
       - WEB3SIGNER=${WEB3SIGNER:-false}
       - W3S_NODE=${W3S_NODE}
       - CL_NODE=${CL_NODE}
-    depends_on:
-      - validator
     entrypoint:
       - keymanager.sh
       - /var/lib/nimbus/api-token.txt
-      - ${VC_ALIAS}
+      - ${VC_ALIAS:-vc}
 
 volumes:
   nimbus-vc-data:

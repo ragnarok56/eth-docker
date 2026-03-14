@@ -9,6 +9,7 @@ ARG SRC_REPO
 ARG USER=mev
 ARG UID=10666
 
+# Always included in alpine:3
 # See https://stackoverflow.com/a/55757473/12429735RUN
 RUN adduser \
     --disabled-password \
@@ -17,4 +18,11 @@ RUN adduser \
     --uid "${UID}" \
     "${USER}"
 
+# Cannot assume buildkit, hence no chmod
+COPY --chown=${USER}:${USER} ./docker-entrypoint.sh /usr/local/bin/
+# Belt and suspenders
+RUN chmod -R 755 /usr/local/bin/*
+
 USER ${USER}
+
+ENTRYPOINT ["/app/mev-boost"]

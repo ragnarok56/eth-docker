@@ -24,14 +24,14 @@ services:
     environment:
       - JWT_SECRET=${JWT_SECRET}
       - EL_EXTRAS=${EL_EXTRAS:-}
-      - ARCHIVE_NODE=${EL_ARCHIVE_NODE:-}
-      - EL_MINIMAL_NODE=${EL_MINIMAL_NODE:-}
+      - NODE_TYPE=${EL_NODE_TYPE:-pre-merge-expiry}
+      - CL_NODE_TYPE=${CL_NODE_TYPE:-pruned}
       - NETWORK=${NETWORK}
       - IPV6=${IPV6:-false}
-      - DOCKER_TAG=${ERIGON_DOCKER_TAG:-latest}
       - COMPOSE_FILE=${COMPOSE_FILE}
       - CL_P2P_PORT=${CL_P2P_PORT:-9000}
       - CL_REST_PORT=${CL_REST_PORT:-5052}
+      - CL_MAX_PEER_COUNT=${CL_MAX_PEER_COUNT:-128}
       - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL:-}
       - MEV_BOOST=${MEV_BOOST:-false}
       - MEV_NODE=${MEV_NODE:-}
@@ -53,7 +53,8 @@ services:
       default:
         aliases:
           - eth1
-          - ${EL_ALIAS:-${NETWORK}-execution} # This allows multiple Eth Docker stacks all connected to the same bridge network
+          # This allows multiple Eth Docker stacks all connected to the same bridge network
+          - ${EL_ALIAS:-default-execution}
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -75,7 +76,7 @@ services:
       - --metrics
       - --metrics.addr
       - 0.0.0.0
-# Erigon needs this to be explicit. When it's covered by defaults, remove
+      # Erigon needs this to be explicit. When it's covered by defaults, remove
       - --http.api
       - web3,eth,net,engine
       - --http
@@ -86,6 +87,8 @@ services:
       - --http.vhosts=*
       - --http.corsdomain=*
       - --ws
+      - --ws.port
+      - ${EL_WS_PORT}
       # Allow RocketPool >=1.9 watchtower queries
       - --rpc.returndata.limit
       - "1000000"
@@ -96,8 +99,8 @@ services:
       - --authrpc.vhosts=*
       - --authrpc.jwtsecret
       - /var/lib/erigon/ee-secret/jwtsecret
-      - --maxpeers
-      - ${EL_MAX_PEER_COUNT:-100}
+      - ${EL_MAX_PEER_COUNT:+--maxpeers}
+      - ${EL_MAX_PEER_COUNT:+${EL_MAX_PEER_COUNT}}
     labels:
       - metrics.scrape=true
       - metrics.path=/debug/metrics/prometheus
@@ -113,7 +116,7 @@ services:
     volumes:
       - erigon-el-data:/var/lib/erigon
       - /etc/localtime:/etc/localtime:ro
-    entrypoint: ["/bin/sh","-c"]
+    entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         rm -rf /var/lib/erigon/caplin/*

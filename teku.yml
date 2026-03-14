@@ -16,30 +16,40 @@ x-build: &teku-build
     - DOCKER_REPO=${TEKU_DOCKER_REPO:-consensys/teku}
 
 services:
-  consensus:
-    restart: "unless-stopped"
+  teku-builder:
+    restart: "no"
     build:
       <<: *teku-build
     image: teku:local
     pull_policy: never
+    entrypoint: ["true"]
+
+  consensus:
+    restart: "unless-stopped"
+    image: teku:local
+    pull_policy: never
     user: teku
     stop_grace_period: 1m
+    depends_on:
+      teku-builder:
+        condition: service_completed_successfully
     volumes:
       - tekuconsensus-data:/var/lib/teku
       - /etc/localtime:/etc/localtime:ro
       - jwtsecret:/var/lib/teku/ee-secret
     environment:
-      - JAVA_OPTS=${TEKU_HEAP:--Xmx7g}
+      - JAVA_OPTS=${TEKU_HEAP:--Xmx8g}
       - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
+      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}
       - MEV_NODE=${MEV_NODE}
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - CL_EXTRAS=${CL_EXTRAS:-}
       - VC_EXTRAS=
       - DOPPELGANGER=false
-      - ARCHIVE_NODE=${CL_ARCHIVE_NODE:-}
+      - NODE_TYPE=${CL_NODE_TYPE:-pruned}
       - GRAFFITI=${GRAFFITI:-}
       - DEFAULT_GRAFFITI=true
       - WEB3SIGNER=false
@@ -56,7 +66,8 @@ services:
       default:
         aliases:
           - eth2
-          - ${CL_ALIAS:-${NETWORK}-consensus} # This allows multiple Eth Docker stacks all connected to the same bridge network
+          # This allows multiple Eth Docker stacks all connected to the same bridge network
+          - ${CL_ALIAS:-default-consensus}
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -68,8 +79,8 @@ services:
       - /var/lib/teku/ee-secret/jwtsecret
       - --eth1-deposit-contract-max-request-size=1000
       - --p2p-port=${CL_P2P_PORT:-9000}
-      - --p2p-peer-upper-bound=${CL_MAX_PEER_COUNT:-100}
-      - --p2p-peer-lower-bound=${CL_MIN_PEER_COUNT:-64}
+      - ${CL_MAX_PEER_COUNT:+--p2p-peer-upper-bound=${CL_MAX_PEER_COUNT}}
+      - ${CL_MIN_PEER_COUNT:+--p2p-peer-lower-bound=${CL_MIN_PEER_COUNT}}
       - --logging=${LOG_LEVEL}
       - --rest-api-host-allowlist=*
       - --rest-api-enabled=true
@@ -90,17 +101,21 @@ services:
 
   validator:
     restart: "unless-stopped"
-    build:
-      <<: *teku-build
     image: teku:local
     pull_policy: never
     user: teku
+    depends_on:
+      consensus:
+        condition: service_started
+      teku-builder:
+        condition: service_completed_successfully
     volumes:
       - teku-vc-data:/var/lib/teku
       - /etc/localtime:/etc/localtime:ro
     environment:
       - JAVA_OPTS=${TEKU_HEAP:--Xmx2g}
       - MEV_BOOST=${MEV_BOOST}
+      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}
       - VC_EXTRAS=${VC_EXTRAS:-}
       - DOPPELGANGER=${DOPPELGANGER:-}
       - GRAFFITI=${GRAFFITI:-}
@@ -108,12 +123,12 @@ services:
       - WEB3SIGNER=${WEB3SIGNER:-false}
       - W3S_NODE=${W3S_NODE}
       - NETWORK=${NETWORK}
-      - VC_ALIAS=${VC_ALIAS}
+      - VC_ALIAS=${VC_ALIAS:-vc}
       - ENABLE_DIST_ATTESTATION_AGGR=${ENABLE_DIST_ATTESTATION_AGGR:-false}
     networks:
       default:
         aliases:
-          - ${VC_ALIAS}
+          - ${VC_ALIAS:-vc}
     <<: *logging
     entrypoint:
       - docker-entrypoint-vc.sh
@@ -147,11 +162,12 @@ services:
   validator-exit:
     profiles: ["tools"]
     restart: "no"
-    build:
-      <<: *teku-build
     image: teku:local
     pull_policy: never
     user: teku
+    depends_on:
+      teku-builder:
+        condition: service_completed_successfully
     volumes:
       - teku-vc-data:/var/lib/teku
       - /etc/localtime:/etc/localtime:ro
@@ -170,6 +186,8 @@ services:
     image: vc-utils:local
     pull_policy: never
     user: root
+    depends_on:
+      - validator
     volumes:
       - teku-vc-data:/var/lib/teku
       - ./.eth/validator_keys:/validator_keys
@@ -182,12 +200,10 @@ services:
       - WEB3SIGNER=${WEB3SIGNER:-false}
       - W3S_NODE=${W3S_NODE}
       - CL_NODE=${CL_NODE}
-    depends_on:
-      - validator
     entrypoint:
       - keymanager.sh
       - /var/lib/teku/validator/key-manager/validator-api-bearer
-      - ${VC_ALIAS}
+      - ${VC_ALIAS:-vc}
 
 volumes:
   tekuconsensus-data:

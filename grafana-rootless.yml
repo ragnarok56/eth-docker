@@ -23,10 +23,12 @@ services:
       - CLIENT=${COMPOSE_FILE}
     command:
       - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=40d
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION_TIME:-40d}
       - --web.console.libraries=/usr/share/prometheus/console_libraries
       - --web.console.templates=/usr/share/prometheus/consoles
     <<: *logging
+    extra_hosts:  # So we can scrape targets on the host
+      - "host.docker.internal:host-gateway"
     depends_on:
       - blackbox-exporter
       - json-exporter
@@ -37,7 +39,7 @@ services:
     image: samcm/ethereum-metrics-exporter:debian-latest
     entrypoint:
       - /ethereum-metrics-exporter
-      - --consensus-url=${CL_NODE}
+      - --consensus-url=http://consensus:${CL_REST_PORT:-5052}
       - --execution-url=http://execution:${EL_RPC_PORT:-8545}
     <<: *logging
 
@@ -61,6 +63,23 @@ services:
     command:
       - --config.file
       - /config/json.yml
+
+  tempo:
+    image: grafana/tempo:2.10.1
+    command:
+      - '-config.file=/etc/tempo.yaml'
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo.yaml
+      - ./tempo/overrides.yaml:/etc/overrides.yaml
+      - tempo-data:/var/tempo
+    restart: "unless-stopped"
+    <<: *logging
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=3200
+      - metrics.instance=tempo
+      - metrics.network=${NETWORK}
 
   grafana:
     restart: "unless-stopped"
@@ -92,3 +111,4 @@ volumes:
   grafana-data:
   grafana-config:
   prom-data:
+  tempo-data:

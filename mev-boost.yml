@@ -22,8 +22,11 @@ services:
     networks:
       default:
         aliases:
-          - ${MEV_ALIAS:-${NETWORK}-mev} # This allows multiple Eth Docker stacks all connected to the same bridge network
+          - ${MEV_ALIAS:-default-mev}  # This allows multiple Eth Docker stacks all connected to the same bridge network
+    environment:
+      - MEV_EXTRAS=${MEV_EXTRAS:-}
     entrypoint:
+      - docker-entrypoint.sh
       - /app/mev-boost
       - -addr
       - 0.0.0.0:18550
@@ -35,4 +38,13 @@ services:
       - ${MEV_MIN_BID:-0}
       - -loglevel
       - ${LOG_LEVEL}
+      - -metrics
+      - -metrics-addr
+      - 0.0.0.0:18551
     <<: *logging
+    labels:
+      - metrics.scrape=true
+      - metrics.path=/metrics
+      - metrics.port=18551
+      - metrics.instance=mev-boost
+      - metrics.network=${NETWORK}

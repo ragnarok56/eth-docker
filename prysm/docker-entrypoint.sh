@@ -1,32 +1,34 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [ "$(id -u)" = '0' ]; then
+if [[ "$(id -u)" -eq 0 ]]; then
   chown -R prysmconsensus:prysmconsensus /var/lib/prysm
   exec gosu prysmconsensus docker-entrypoint.sh "$@"
 fi
 
-# Migrate from old to new volume
-if [[ -d /var/lib/prysm-og && ! -f /var/lib/prysm-og/migrationdone \
-    && $(ls -A /var/lib/prysm-og/) ]]; then
-  echo "Migrating from old Prysm volume to new one"
-  echo "This may take 10 minutes on a fast drive, or hours if the Prysm DB is very large. Please be patient"
-  echo "If your Prysm DB is well over 200 GiB in size, please consider \"./ethd resync-consensus\""
-  rsync -a --remove-source-files --exclude='ee-secret' --info=progress2 /var/lib/prysm-og/ /var/lib/prysm/
-  touch /var/lib/prysm-og/migrationdone
-  echo "Migration completed, data is now in volume \"prysmconsensus-data\""
-fi
 
-if [ -n "${JWT_SECRET}" ]; then
+# Because we're oh-so-clever with + substitution and maxpeers, we may have empty args. Remove them
+__strip_empty_args() {
+  local arg
+  __args=()
+  for arg in "$@"; do
+    if [[ -n "${arg}" ]]; then
+      __args+=("${arg}")
+    fi
+  done
+}
+
+
+if [[ -n "${JWT_SECRET}" ]]; then
   echo -n "${JWT_SECRET}" > /var/lib/prysm/ee-secret/jwtsecret
   echo "JWT secret was supplied in .env"
 fi
 
-if [[ -O "/var/lib/prysm/ee-secret" ]]; then
+if [[ -O /var/lib/prysm/ee-secret ]]; then
   # In case someone specifies JWT_SECRET but it's not a distributed setup
   chmod 777 /var/lib/prysm/ee-secret
 fi
-if [[ -O "/var/lib/prysm/ee-secret/jwtsecret" ]]; then
+if [[ -O /var/lib/prysm/ee-secret/jwtsecret ]]; then
   chmod 666 /var/lib/prysm/ee-secret/jwtsecret
 fi
 
@@ -38,7 +40,7 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
   # For want of something more amazing, let's just fail if git fails to pull this
   set -e
-  if [ ! -d "/var/lib/prysm/testnet/${config_dir}" ]; then
+  if [[ ! -d "/var/lib/prysm/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/prysm/testnet
     cd /var/lib/prysm/testnet
     git init --initial-branch="${branch}"
@@ -57,46 +59,63 @@ else
 fi
 
 # Check whether we should rapid sync
-if [ -n "${CHECKPOINT_SYNC_URL:+x}" ]; then
-  __checkpoint_sync="--checkpoint-sync-url=${CHECKPOINT_SYNC_URL}"
+if [[ -n "${CHECKPOINT_SYNC_URL:+x}" ]]; then
+  __checkpoint_sync="--checkpoint-sync-url=${CHECKPOINT_SYNC_URL} --enable-backfill"
   echo "Checkpoint sync enabled"
 else
   __checkpoint_sync=""
 fi
 
 # Check whether we should use MEV Boost
-if [ "${MEV_BOOST}" = "true" ]; then
+if [[ "${MEV_BOOST}" = "true" ]]; then
   __mev_boost="--http-mev-relay=${MEV_NODE:-http://mev-boost:18550}"
   echo "MEV Boost enabled"
+  echo "No MEV Build Factor configured: Prysm doesn't support it, or Eth Docker doesn't know how."
 else
   __mev_boost=""
 fi
 
-if [ "${ARCHIVE_NODE}" = "true" ]; then
-  echo "Prysm archive node without pruning"
-  __prune="--slots-per-archive-point=32 --blob-retention-epochs=4294967295"
-else
-  __prune=""
-fi
+case "${NODE_TYPE}" in
+  archive)
+    echo "Prysm archive node without pruning"
+    __prune="--slots-per-archive-point=32 --blob-retention-epochs=4294967295"
+    ;;
+  full)
+    echo "Prysm node without beacon DB pruning"
+    __prune=""
+    ;;
+  pruned)
+    echo "Prysm node with beacon DB pruning"
+    __prune="--beacon-db-pruning"
+    ;;
+  *)
+    echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Prysm implementation."
+    sleep 30
+    exit 1
+    ;;
+esac
+
+__strip_empty_args "$@"
+set -- "${__args[@]}"
 
 if [[ "${NETWORK}" = "sepolia" ]]; then
-  GENESIS=/var/lib/prysm/genesis.ssz
-  if [ ! -f "$GENESIS" ]; then
+  __genesis_file="/var/lib/prysm/genesis.ssz"
+  if [[ ! -f "${__genesis_file}" ]]; then
     echo "Fetching genesis file for Sepolia testnet"
-    curl -fsSL -o "$GENESIS" https://github.com/eth-clients/sepolia/raw/main/metadata/genesis.ssz
+    curl -fsSL -o "${__genesis_file}" https://github.com/eth-clients/sepolia/raw/main/metadata/genesis.ssz
   fi
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" "--genesis-state=$GENESIS" ${__network} ${__checkpoint_sync} ${__prune} ${__mev_boost} ${CL_EXTRAS}
+  exec "$@" "--genesis-state=${__genesis_file}" ${__network} ${__checkpoint_sync} ${__prune} ${__mev_boost} ${CL_EXTRAS}
 elif [[ "${NETWORK}" = "hoodi" ]]; then
-  GENESIS=/var/lib/prysm/genesis.ssz
-  if [ ! -f "$GENESIS" ]; then
+  __genesis_file=/var/lib/prysm/genesis.ssz
+  if [[ ! -f "${__genesis_file}" ]]; then
     echo "Fetching genesis file for Hoodi testnet"
-    curl -fsSL -o "$GENESIS" https://github.com/eth-clients/hoodi/raw/main/metadata/genesis.ssz
+    curl -fsSL -o "${__genesis_file}" https://github.com/eth-clients/hoodi/raw/main/metadata/genesis.ssz
   fi
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" "--genesis-state=$GENESIS" ${__network} ${__checkpoint_sync} ${__prune} ${__mev_boost} ${CL_EXTRAS}
+  exec "$@" "--genesis-state=${__genesis_file}" ${__network} ${__checkpoint_sync} ${__prune} ${__mev_boost} ${CL_EXTRAS}
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
