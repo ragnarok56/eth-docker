@@ -6,6 +6,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exec gosu ethrex "${BASH_SOURCE[0]}" "$@"
 fi
 
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
+fi
+
 
 # Because we're oh-so-clever with + substitution and maxpeers, we may have empty args. Remove them
 __strip_empty_args() {
@@ -43,14 +48,26 @@ if [[ -O /var/lib/ee-secret/jwtsecret ]]; then
   chmod 666 /var/lib/ee-secret/jwtsecret
 fi
 
-if [[ "${NETWORK}" =~ ^https?:// ]]; then
+config_dir_path=""
+if [[ "${NETWORK}" = "ephemery" ]]; then
+  config_dir_path="$(ephemery-config.sh /var/lib/ethrex/testnet/ephemery)"
+  # A new iteration has a new genesis, and the chain data of the old one is for a dead chain.
+  # testnet holds the Ephemery configs and stays.
+  __iteration="$(basename "$(dirname "${config_dir_path}")")"
+  if [[ -f /var/lib/ethrex/ephemery-iteration ]]; then
+    __old_iteration="$(cat /var/lib/ethrex/ephemery-iteration)"
+    if [[ ! "${__old_iteration}" = "${__iteration}" ]]; then
+      echo "Ephemery reset from ${__old_iteration} to ${__iteration}, removing the old chain data"
+      find /var/lib/ethrex -mindepth 1 -maxdepth 1 ! -name testnet ! -name ephemery-iteration -exec rm -rf {} +
+    fi
+  fi
+  echo "${__iteration}" > /var/lib/ethrex/ephemery-iteration
+elif [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "Custom testnet at ${NETWORK}"
   repo=$(awk -F'/tree/' '{print $1}' <<< "${NETWORK}")
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/ethrex/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/ethrex/testnet
     cd /var/lib/ethrex/testnet
@@ -60,9 +77,15 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/ethrex/testnet/${config_dir}/enodes.yaml" | paste -sd ",")"
-  set +e
-  __network="--network /var/lib/ethrex/testnet/${config_dir}/genesis.json --bootnodes ${bootnodes}"
+  config_dir_path="/var/lib/ethrex/testnet/${config_dir}"
+fi
+if [[ -n "${config_dir_path}" ]]; then
+  if [[ -f "${config_dir_path}/enodes.yaml" ]]; then
+    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/enodes.yaml")"
+  else
+    bootnodes="$(paste -sd, "${config_dir_path}/enodes.txt")"
+  fi
+  __network="--network ${config_dir_path}/genesis.json --bootnodes ${bootnodes}"
 else
   __network="--network ${NETWORK}"
 fi
@@ -88,6 +111,16 @@ case "${NODE_TYPE}" in
   pre-merge-expiry)
     echo "Ethrex minimal node with pre-merge history expiry and snap sync"
     __sync="--syncmode snap"
+    ;;
+  custom)
+    echo "Ethrex default block retention; adjust as desired by \"EL_EXTRAS\" in \".env\""
+    __sync=""
+    ;;
+  use-cl-zkproofs)
+    echo "ERROR: The node type ${NODE_TYPE} is designed to not run an execution layer client"
+    echo "Remove \"ethrex.yml\" from configuration, or change the node type"
+    sleep 30
+    exit 1
     ;;
   *)
     echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Ethrex implementation."

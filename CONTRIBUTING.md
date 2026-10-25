@@ -4,15 +4,27 @@ Contributions are welcome. All contributed code will be covered by the Apache Li
 
 ## Linting
 
-eth-docker CI uses [pre-commit](https://pre-commit.com/) to lint all code within the repo. Add it to your local
-copy with `apt install pre-commit` and `pre-commit install`.
+Eth Docker CI uses [pre-commit](https://pre-commit.com/) to lint all code within the repo.
 
-This repo uses a squash-and-merge workflow to avoid extra merge commits. Create a branch for your feature or fix,
-and work on this branch, then offer a PR from there.
+Install uv
+```
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+Python 3.15 needs to be installed on the host. If you don't have it, use `uv` to install a local copy.
+```
+uv python install 3.15
+uv python update-shell
+```
+Install pre-commit with `uv` and add it to your local copy. Don't use the distro package (`apt install pre-commit`). It seeds a pip that is too old to run on Python 3.15.
+```
+uv tool install pre-commit --with pre-commit-uv
+pre-commit install
+```
+
+This repo uses a squash-and-merge workflow to avoid extra merge commits. Create a branch for your feature or fix, and work on this branch, then offer a PR from there. A `rebase -i origin/main` on your PR that squashes everything into one commit is friendly.
 
 If you end up working on `main`, you can create an `upstream` remote with
-`git remote add upstream https://github.com/ethstaker/eth-docker.git`, and create a git alias with
-`git config --global alias.push-clean '!git fetch upstream main && git rebase upstream/main && git push -f'`. You can
+`git remote add upstream https://github.com/ethstaker/eth-docker.git`, and create a git alias with `git config --global alias.push-clean '!git fetch upstream main && git rebase upstream/main && git push -f'`. You can
 then `git push-clean` to your fork before opening a PR.
 
 ## Style
@@ -29,8 +41,7 @@ Prefer `[[ ]]` over `[ ]`
 
 Prefer `${var}` over `$var`, exception parameters and specials such as `$1,` `$@`, `$?`, &c.
 
-Functions that can be called from outside a script are `function-name`, functions that are meant only for
-internal use are `__function_name`. E.g. `prune-besu` or `validator-list`, and `__docompose` or `__call_api`.
+Functions that can be called from outside a script are `function-name`, functions that are meant only for internal use are `__function_name`. E.g. `prune-besu` or `validator-list`, and `__docompose` or `__call_api`.
 
 External variables as well as variables found in `.env` are `VARIABLE_NAME`
 
@@ -38,7 +49,10 @@ Local variables are `variable_name`
 
 Global variables are `__variable_name`
 
+A function that assigns to a variable named by its caller, with `printf -v`, names all of its own locals `_variable_name`, with a single underscore. Bash scoping is dynamic: a local that shares a name with the caller's variable would receive the value instead, and the caller would get nothing. Callers use `variable_name` and `__variable_name`, which cannot clash. A caller declares that variable `local`, unless it is a documented global: otherwise the value lands in whichever function further up the call stack has a local of that name, or in a new global. These functions also reject an output name that matches one of their locals, and exit with code 70. Make that check with `case` rather than `=~`, because a failed `=~` match empties the caller's `BASH_REMATCH`. See `__get_value_from_env` and `__host_route_v4`.
+
+Pass values to and from small helpers explicitly, with arguments in and an output variable out. Use a global only for process-wide context set at startup, accumulators such as `__final_msg`, state that the error trap or the end-of-run summary reads, arrays, and state shared by the steps of one flow, such as `config` or `update`. Declare every `__variable_name` global at the top of `ethd`, and give each new one a comment naming the function that sets it and the functions that read it. Never reuse a global for a different meaning; use a local instead. `VARIABLE_NAME` globals that carry a value into `.env` by name, through the `__write_vars` of `config` or `__update_value_in_env "${var}" "${!var}"`, are exempt; to only read a value from `.env`, use a local.
+
 Assign `$?` to `exitstatus` before checking its value, unless you have a specific reason not to
 
-In the entrypoint scripts, which have very few functions, "local" is interpreted to mean "not used past this block",
-and "global" means "we need this again later", particularly for `exec`.
+In the entrypoint scripts, which have very few functions, "local" is interpreted to mean "not used past this block", and "global" means "we need this again later", particularly for `exec`.

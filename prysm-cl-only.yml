@@ -1,16 +1,18 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 x-build: &prysm-build
   context: ./prysm
+  additional_contexts:
+    ephemery: ./ephemery
   dockerfile: ${PRYSM_DOCKERFILE}
   args:
-    - BUILD_TARGET=${PRYSM_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+    - BUILD_TARGET=${PRYSM_SRC_BUILD_TARGET:-$$(git describe --tags $$(git rev-list --tags --max-count=1))}
     - SRC_REPO=${PRYSM_SRC_REPO:-https://github.com/offchainlabs/prysm}
     - DOCKER_TAG=${PRYSM_DOCKER_TAG:-stable}
     - DOCKER_VC_TAG=${PRYSM_DOCKER_VC_TAG:-stable}
@@ -39,6 +41,8 @@ services:
       - CL_EXTRAS=${CL_EXTRAS:-}
       - NODE_TYPE=${CL_NODE_TYPE:-pruned}
       - NETWORK=${NETWORK}
+      - IPV6=${IPV6:-false}
+      - HOST_IP=${HOST_IP:-}
     ports:
       - ${HOST_IP:-}:${PRYSM_PORT}:${PRYSM_PORT}/tcp
       - ${HOST_IP:-}:${PRYSM_UDP_PORT}:${PRYSM_UDP_PORT}/udp
@@ -93,6 +97,7 @@ services:
       - metrics.port=8008
       - metrics.instance=consensus
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
 volumes:
   prysmconsensus-data:

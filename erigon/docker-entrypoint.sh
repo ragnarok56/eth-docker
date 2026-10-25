@@ -6,6 +6,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exec gosu erigon "${BASH_SOURCE[0]}" "$@"
 fi
 
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
+fi
+
 
 # Because we're oh-so-clever with + substitution and maxpeers, we may have empty args. Remove them
 __strip_empty_args() {
@@ -39,14 +44,26 @@ if [[ -O /var/lib/erigon/ee-secret/jwtsecret ]]; then
   chmod 666 /var/lib/erigon/ee-secret/jwtsecret
 fi
 
-if [[ "${NETWORK}" =~ ^https?:// ]]; then
+config_dir_path=""
+if [[ "${NETWORK}" = "ephemery" ]]; then
+  config_dir_path="$(ephemery-config.sh /var/lib/erigon/testnet/ephemery)"
+  # A new iteration has a new genesis, and the chain data of the old one is for a dead chain. This covers
+  # Caplin's data as well. ee-secret is the JWT secret volume and testnet holds the Ephemery configs; both stay.
+  __iteration="$(basename "$(dirname "${config_dir_path}")")"
+  if [[ -f /var/lib/erigon/ephemery-iteration ]]; then
+    __old_iteration="$(cat /var/lib/erigon/ephemery-iteration)"
+    if [[ ! "${__old_iteration}" = "${__iteration}" ]]; then
+      echo "Ephemery reset from ${__old_iteration} to ${__iteration}, removing the old chain data"
+      find /var/lib/erigon -mindepth 1 -maxdepth 1 ! -name ee-secret ! -name testnet \
+        ! -name ephemery-iteration -exec rm -rf {} +
+    fi
+  fi
+elif [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "Custom testnet at ${NETWORK}"
   repo=$(awk -F'/tree/' '{print $1}' <<< "${NETWORK}")
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/erigon/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/erigon/testnet
     cd /var/lib/erigon/testnet
@@ -56,12 +73,21 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/erigon/testnet/${config_dir}/enodes.yaml" | paste -sd ",")"
-  networkid="$(jq -r '.config.chainId' "/var/lib/erigon/testnet/${config_dir}/genesis.json")"
-  set +e
-  __network="--bootnodes=${bootnodes} --networkid=${networkid}"
+  config_dir_path="/var/lib/erigon/testnet/${config_dir}"
+fi
+if [[ -n "${config_dir_path}" ]]; then
+  if [[ -f "${config_dir_path}/enodes.yaml" ]]; then
+    el_bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/enodes.yaml")"
+  else
+    el_bootnodes="$(paste -sd, "${config_dir_path}/enodes.txt")"
+  fi
+  networkid="$(jq -r '.config.chainId' "${config_dir_path}/genesis.json")"
+  __network="--bootnodes=${el_bootnodes} --networkid=${networkid}"
   if [[ ! -d /var/lib/erigon/chaindata ]]; then
-    erigon init --datadir /var/lib/erigon "/var/lib/erigon/testnet/${config_dir}/genesis.json"
+    erigon init --datadir /var/lib/erigon "${config_dir_path}/genesis.json"
+  fi
+  if [[ -n "${__iteration:-}" ]]; then
+    echo "${__iteration}" > /var/lib/erigon/ephemery-iteration
   fi
 else
   __network="--chain ${NETWORK}"
@@ -80,22 +106,32 @@ case "${NODE_TYPE}" in
     case "${NETWORK}" in
       mainnet|sepolia)
         echo "Erigon minimal node with pre-merge history expiry"
-        __prune="--prune.mode=full --persist.receipts=false"
+        __prune="--prune.mode=full --persist.receipts=false --prune.distance.blocks=18446744073709551615"
         ;;
       *)
-        echo "There is no pre-merge history for ${NETWORK} network, Erigon will use \"full\" pruning."
-        __prune="--prune.mode=full --persist.receipts=false"
+        echo "There is no pre-merge history for ${NETWORK} network, Erigon will keep all blocks."
+        __prune="--prune.mode=full --persist.receipts=false --prune.distance.blocks=18446744073709551615"
         ;;
     esac
     ;;
   rolling-expiry)
-    echo "Erigon minimal node with rolling history expiry, keeps 1 year."
-    # 365 days = 82125 epochs = 2628000 slots / blocks
-    __prune="--prune.mode=full --persist.receipts=false --prune.distance=2628000 --prune.distance.blocks=2628000"
+    echo "Erigon minimal node with rolling history expiry, keeps ~5 months"
+    # 33_024 epochs = 1056768 slots / blocks
+    __prune="--prune.mode=full --persist.receipts=false --prune.distance=1056768 --prune.distance.blocks=1056768"
     ;;
   aggressive-expiry)
     echo "Erigon minimal node with aggressive expiry"
     __prune="--prune.mode=minimal --persist.receipts=false"
+    ;;
+  custom)
+    echo "Erigon default block retention; adjust as desired by \"EL_EXTRAS\" in \".env\""
+    __prune=""
+    ;;
+  use-cl-zkproofs)
+    echo "ERROR: The node type ${NODE_TYPE} is designed to not run an execution layer client"
+    echo "Remove \"erigon.yml\" from configuration, or change the node type"
+    sleep 30
+    exit 1
     ;;
   *)
     echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Erigon implementation."
@@ -111,17 +147,34 @@ if [[ ! "${COMPOSE_FILE}" =~ "caplin.yml" ]]; then
 else
   echo "Running Erigon with internal Caplin consensus layer client"
   __caplin="--caplin.discovery.addr=0.0.0.0 --caplin.discovery.port=${CL_P2P_PORT} --caplin.blobs-immediate-backfill=true"
-  __caplin+=" --caplin.discovery.tcpport=${CL_P2P_PORT} --caplin.validator-monitor=true"
+  __caplin+=" --caplin.discovery.tcpport=${CL_P2P_PORT} --caplin.discovery.quicport=${CL_QUIC_PORT} --caplin.validator-monitor=true"
   __caplin+=" --caplin.max-peer-count=${CL_MAX_PEER_COUNT}"
   __caplin+=" --beacon.api=beacon,builder,config,debug,events,node,validator,lighthouse"
   __caplin+=" --beacon.api.addr=0.0.0.0 --beacon.api.port=${CL_REST_PORT} --beacon.api.cors.allow-origins=*"
-  if [[ "${MEV_BOOST}" = "true" ]]; then
+  # Adjust RIGHT after each network's Glamsterdam hardfork
+  if [[ "${MEV_BOOST}" = "true" && "${NETWORK}" =~ ^(hoodi|mainnet)$ ]]; then
     __caplin+=" --caplin.mev-relay-url=${MEV_NODE}"
     echo "MEV Boost enabled"
+  elif [[ "${MEV_BOOST}" = "true" ]]; then
+    echo "MEV_BOOST is true, but MEV Boost is not used on ${NETWORK}. Ignoring it."
   fi
-  if [[ "${CL_NODE_TYPE}" = "archive" ]]; then
-    echo "Running Caplin archive node"
-    __caplin+=" --caplin.states-archive=true --caplin.blobs-archive=true --caplin.blobs-no-pruning=true --caplin.blocks-archive=true"
+  case "${CL_NODE_TYPE}" in
+    archive)
+      echo "Caplin archive node without history pruning"
+      __caplin+=" --caplin.states-archive=true --caplin.blocks-archive=true"
+      ;;
+    blob-archive)
+      echo "Caplin archive node without blob or history pruning"
+      __caplin+=" --caplin.states-archive=true --caplin.blobs-archive=true --caplin.blobs-no-pruning=true --caplin.blocks-archive=true"
+      ;;
+  esac
+  if [[ -n "${config_dir_path}" ]]; then
+    if [[ -f "${config_dir_path}/bootstrap_nodes.txt" ]]; then
+      cl_bootnodes="$(paste -sd, "${config_dir_path}/bootstrap_nodes.txt")"
+    else
+      cl_bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/bootstrap_nodes.yaml")"
+    fi
+    __caplin+=" --caplin.custom-config=${config_dir_path}/config.yaml --caplin.custom-genesis=${config_dir_path}/genesis.ssz --sentinel.bootnodes=${cl_bootnodes}"
   fi
   if [[ -n "${CHECKPOINT_SYNC_URL}" ]]; then
     __caplin+=" --caplin.checkpoint-sync-url=${CHECKPOINT_SYNC_URL}/eth/v2/debug/beacon/states/finalized"

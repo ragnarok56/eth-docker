@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
   chown -R user:user /var/lib/nimbus
   exec gosu user docker-entrypoint.sh "$@"
+fi
+
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
 fi
 
 
@@ -19,28 +24,26 @@ __strip_empty_args() {
 }
 
 
-__download_era_files() {
-# Copyright (c) 2025 Status Research & Development GmbH. Licensed under
-# either of:
+__download_ere_files() {
+# Copyright (c) 2025 Status Research & Development GmbH and 2026 Eth Docker maintainers.
+# Licensed under either of:
 # - Apache License, version 2.0
 # - MIT license
 # at your option. This file may not be copied, modified, or distributed except
 # according to those terms.
 
-# Usage: __download_era_files <download_url> <download_path>
+# Usage: __download_ere_files <download_url> <download_path>
 
   local download_url
   local download_dir
   local base_url
-  local urls_raw_file
-  local urls_file
   local completed
   local percent
   local total_files
   local aria_pid
 
   if [[ $# -ne 2 ]]; then
-    echo "__download_era_files called without <download_url> <download_path>. This is a bug."
+    echo "__download_ere_files called without <download_url> <download_path>. This is a bug."
     exit 70
   fi
 
@@ -48,64 +51,52 @@ __download_era_files() {
   download_dir="$2"
 
   mkdir -p "${download_dir}"
-  cd "${download_dir}" || { echo "Could not change directory to ${download_dir}. This is a bug."; exit 70; }
+  pushd "${download_dir}" > /dev/null || { echo "Could not change directory to ${download_dir}. This is a bug."; exit 70; }
 
-  # Generate safe temp files for URL lists
-  urls_raw_file=$(mktemp)
-  urls_file=$(mktemp)
-
-  # Scrape and filter
-  curl -s "${download_url}" | \
-  grep -Eo 'href="[^"]+"' | \
-  cut -d'"' -f2 | \
-  grep -Ei '\.(era|era1|txt)$' | \
-  sort -u > "${urls_raw_file}"
-
-  # Remove trailing file (like index.html) to get actual base path
-  base_url=$(echo "${download_url}" | sed -E 's|/[^/]*\.[a-zA-Z0-9]+$||')
-
-  # 🔧 Normalize base URL (handle trailing slash or index.html)
+  # 🔧 Normalize base URL (handle trailing slash)
   case "${download_url}" in
-    */index.html) base_url="${download_url%/index.html}" ;;
     */)           base_url="${download_url%/}" ;;
     *)            base_url="${download_url}" ;;
   esac
 
-  # Prepend full URL
-  awk -v url="${base_url}" '{ print url "/" $0 }' "${urls_raw_file}" > "${urls_file}"
-
-  total_files=$(wc -l < "${urls_file}")
-
-  if [[ "${total_files}" -eq 0 ]]; then
-    echo "❌ No .era, .era1, or .txt files found at ${download_url}"
-    exit 1
-  fi
-
-  aria2c -x 8 -j 5 -c -i "${urls_file}" \
+  curl -fsS -O "${base_url}/urls.txt"
+  total_files=$(wc -l < urls.txt)
+  aria2c -x 8 -j 5 -c -i urls.txt \
     --dir="." \
     --console-log-level=warn \
     --quiet=true \
     --summary-interval=0 \
+    --continue=true \
     > /dev/null 2>&1 &
 
   aria_pid=$!
 
-  echo "Downloading Era/Era1 history files"
+  echo "Downloading EraE history files"
   echo "📥 Starting download of ${total_files} files..."
   while kill -0 "${aria_pid}" 2> /dev/null; do
-    completed=$(find . -type f \( -name '*.era' -o -name '*.era1' -o -name '*.txt' \) | wc -l)
+    completed=$(find . -type f \( -name '*.erae' -o -name '*.ere' \) | wc -l)
     percent=$(awk "BEGIN { printf \"%.1f\", (${completed}/${total_files})*100 }")
     echo "📦 Download Progress: ${percent}% complete (${completed} / ${total_files} files)"
     sleep 10
   done
 
-  completed=$(find . -type f \( -name '*.era' -o -name '*.era1' -o -name '*.txt' \) | wc -l)
+  wait "${aria_pid}" && exitstatus=0 || exitstatus=$?
+  if [[ "${exitstatus}" -ne 0 ]]; then
+    echo "EraE download failed with exit code ${exitstatus}"
+    exit "${exitstatus}"
+  fi
+
+  completed=$(find . -type f \( -name '*.erae' -o -name '*.ere' \) | wc -l)
   echo "📦 Download Progress: 100% complete (${completed} / ${total_files} files)"
 
-  # ✅ Cleanup temp files
-  rm -f "${urls_raw_file}" "${urls_file}"
-
   echo "✅ All files downloaded to: ${download_dir}"
+
+  echo "Verifying checksums"
+  curl -fsS -O "${base_url}/checksums_sha256.txt"
+  sha256sum -c checksums_sha256.txt --ignore-missing
+  echo "✅ All checksums verified"
+
+  popd > /dev/null
 }
 
 
@@ -151,6 +142,20 @@ case "${NODE_TYPE}" in
         ;;
     esac
     ;;
+  rolling-expiry)
+    echo "Nimbus EL minimal node with rolling history expiry, keeps ~5 months"
+    __prune="--prune"
+    ;;
+  custom)
+    echo "Nimbus EL default block retention; adjust as desired by \"EL_EXTRAS\" in \".env\""
+    __prune=""
+    ;;
+  use-cl-zkproofs)
+    echo "ERROR: The node type ${NODE_TYPE} is designed to not run an execution layer client"
+    echo "Remove \"nimbus-el.yml\" from configuration, or change the node type"
+    sleep 30
+    exit 1
+    ;;
   *)
     echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Nimbus EL implementation."
     sleep 30
@@ -158,14 +163,26 @@ case "${NODE_TYPE}" in
     ;;
 esac
 
-if [[ "${NETWORK}" =~ ^https?:// ]]; then
+config_dir_path=""
+if [[ "${NETWORK}" = "ephemery" ]]; then
+  config_dir_path="$(ephemery-config.sh /var/lib/nimbus/testnet/ephemery)"
+  # A new iteration has a new genesis, and the chain data of the old one is for a dead chain
+  __iteration="$(basename "$(dirname "${config_dir_path}")")"
+  if [[ -f /var/lib/nimbus/ephemery-iteration ]]; then
+    __old_iteration="$(cat /var/lib/nimbus/ephemery-iteration)"
+    if [[ ! "${__old_iteration}" = "${__iteration}" ]]; then
+      echo "Ephemery reset from ${__old_iteration} to ${__iteration}, removing the old chain data"
+      # This volume holds only execution chain data besides the JWT secret and network configs
+      find /var/lib/nimbus -mindepth 1 -maxdepth 1 ! -name ee-secret ! -name testnet -exec rm -rf {} +
+    fi
+  fi
+  echo "${__iteration}" > /var/lib/nimbus/ephemery-iteration
+elif [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "Custom testnet at ${NETWORK}"
   repo=$(awk -F'/tree/' '{print $1}' <<< "${NETWORK}")
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/nimbus/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/nimbus/testnet
     cd /var/lib/nimbus/testnet
@@ -175,29 +192,42 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/nimbus/testnet/${config_dir}/enodes.yaml" | paste -sd ",")"
-  networkid="$(jq -r '.config.chainId' "/var/lib/nimbus/testnet/${config_dir}/genesis.json")"
-  set +e
-  __network="--bootstrap-node=${bootnodes} --network=${networkid} --custom-network /var/lib/nimbus/testnet/${config_dir}/genesis.json"
+  config_dir_path="/var/lib/nimbus/testnet/${config_dir}"
+fi
+if [[ -n "${config_dir_path}" ]]; then
+  if [[ -f "${config_dir_path}/enodes.yaml" ]]; then
+    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/enodes.yaml")"
+  else
+    bootnodes="$(paste -sd, "${config_dir_path}/enodes.txt")"
+  fi
+  # One flag per node, Nimbus does not split a comma-separated list
+  __network="--bootstrap-node=${bootnodes//,/ --bootstrap-node=} --network=${config_dir_path}/genesis.json"
 else
   __network="--network=${NETWORK}"
 fi
 
 # EraE import
-# Not supported in Nimbus EL yet. Adjust parameters to ACTUAL behavior once it is
-#if [[ -n "${ERA_URL}" && ! -d /var/lib/nimbus/nimbus && ! "${NETWORK}" =~ ^https?:// ]]; then  # Fresh sync and named network
-#  __download_era_files "${ERA_URL}" /var/lib/nimbus/era
-
-# Word splitting is desired for the command line parameters
-# shellcheck disable=SC2086
-#  nimbus_execution_client import --network=${NETWORK} --data-dir=/var/lib/nimbus --era-dir=/var/lib/nimbus/era
-#  rm -rf /var/lib/nimbus/era
-#fi
-
-if [[ -n "${MAX_BLOBS}" ]]; then
-  __blobs="--max-blobs=${MAX_BLOBS}"
-else
-  __blobs=""
+if [[ -n "${ERE_URL}" && ! -f /var/lib/nimbus/ere-import-complete && ! "${NETWORK}" =~ ^https?:// \
+    && ! "${NETWORK}" = "ephemery" ]]; then  # Fresh sync and named network
+  if [[ "${NODE_TYPE}" =~ ^(full|archive|custom)$ ]]; then
+    echo "Starting EraE history import from ${ERE_URL}"
+    if [[ ! -f /var/lib/nimbus/ere-download-complete ]]; then
+      __download_ere_files "${ERE_URL}" /var/lib/nimbus/ere
+      touch /var/lib/nimbus/ere-download-complete
+    fi
+    # Rename legacy erae files. This can be removed once pandaops publishes .ere
+    find /var/lib/nimbus/ere -type f -name '*.erae' -exec sh -c '
+      for f; do
+        mv -- "$f" "${f%.erae}-noproofs.ere"
+      done
+    ' sh {} +
+    # shellcheck disable=SC2086
+    nimbus import --network=${NETWORK} --data-dir=/var/lib/nimbus --ere-dir=/var/lib/nimbus/ere
+    touch /var/lib/nimbus/ere-import-complete
+    rm -rf /var/lib/nimbus/ere
+  else
+    echo "Nimbus is neither a full nor archive node, it uses ${NODE_TYPE}. Skipping EraE import."
+  fi
 fi
 
 __strip_empty_args "$@"
@@ -205,4 +235,4 @@ set -- "${__args[@]}"
 
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-exec "$@" ${__prune} ${__network} ${__blobs} ${EL_EXTRAS}
+exec "$@" ${__prune} ${__network} ${EL_EXTRAS}

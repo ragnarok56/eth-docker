@@ -1,16 +1,16 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 x-build: &ls-build
   context: ./lodestar
   dockerfile: ${LS_DOCKERFILE}
   args:
-    - BUILD_TARGET=${LS_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+    - BUILD_TARGET=${LS_SRC_BUILD_TARGET:-$$(git describe --tags $$(git rev-list --tags --max-count=1))}
     - SRC_REPO=${LS_SRC_REPO:-https://github.com/ChainSafe/lodestar}
     - DOCKER_TAG=${LS_DOCKER_TAG:-latest}
     - DOCKER_REPO=${LS_DOCKER_REPO:-chainsafe/lodestar}
@@ -37,7 +37,10 @@ services:
       - /etc/localtime:/etc/localtime:ro
     environment:
       - MEV_BOOST=${MEV_BOOST}
-      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}
+      - EPBS_BUILDERS=${EPBS_BUILDERS}
+      - EPBS_BUILDER_URLS=${EPBS_BUILDER_URLS}
+      - EPBS_BUILD_FACTOR=${EPBS_BUILD_FACTOR}
+      - EPBS_MIN_BID=${EPBS_MIN_BID}
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - DOPPELGANGER=${DOPPELGANGER}
@@ -84,7 +87,9 @@ services:
       - metrics.port=8009
       - metrics.instance=validator
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
+# Deprecate and remove after Hegotá
   validator-exit:
     profiles: ["tools"]
     restart: "no"
@@ -120,8 +125,6 @@ services:
     image: vc-utils:local
     pull_policy: never
     user: root
-    depends_on:
-      - validator
     volumes:
       - lsvalidator-data:/var/lib/lodestar/validators
       - ./.eth/validator_keys:/validator_keys

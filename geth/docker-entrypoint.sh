@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
   chown -R geth:geth /var/lib/geth
   exec su-exec geth docker-entrypoint.sh "$@"
+fi
+
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
 fi
 
 
@@ -16,6 +21,83 @@ __strip_empty_args() {
       __args+=("${arg}")
     fi
   done
+}
+
+
+__download_ere_files() {
+# Copyright (c) 2025 Status Research & Development GmbH and 2026 Eth Docker maintainers.
+# Licensed under either of:
+# - Apache License, version 2.0
+# - MIT license
+# at your option. This file may not be copied, modified, or distributed except
+# according to those terms.
+
+# Usage: __download_ere_files <download_url> <download_path>
+
+  local download_url
+  local download_dir
+  local base_url
+  local completed
+  local percent
+  local total_files
+  local aria_pid
+
+  if [[ $# -ne 2 ]]; then
+    echo "__download_ere_files called without <download_url> <download_path>. This is a bug."
+    exit 70
+  fi
+
+  download_url="$1"
+  download_dir="$2"
+
+  mkdir -p "${download_dir}"
+  pushd "${download_dir}" > /dev/null || { echo "Could not change directory to ${download_dir}. This is a bug."; exit 70; }
+
+  # 🔧 Normalize base URL (handle trailing slash)
+  case "${download_url}" in
+    */)           base_url="${download_url%/}" ;;
+    *)            base_url="${download_url}" ;;
+  esac
+
+  curl -fsS -O "${base_url}/urls.txt"
+  total_files=$(wc -l < urls.txt)
+  aria2c -x 8 -j 5 -c -i urls.txt \
+    --dir="." \
+    --console-log-level=warn \
+    --quiet=true \
+    --summary-interval=0 \
+    --continue=true \
+    > /dev/null 2>&1 &
+
+  aria_pid=$!
+
+  echo "Downloading EraE history files"
+  echo "📥 Starting download of ${total_files} files..."
+  while kill -0 "${aria_pid}" 2> /dev/null; do
+    completed=$(find . -type f \( -name '*.erae' -o -name '*.ere' \) | wc -l)
+    percent=$(awk "BEGIN { printf \"%.1f\", (${completed}/${total_files})*100 }")
+    echo "📦 Download Progress: ${percent}% complete (${completed} / ${total_files} files)"
+    sleep 10
+  done
+
+  wait "${aria_pid}" && exitstatus=0 || exitstatus=$?
+  if [[ "${exitstatus}" -ne 0 ]]; then
+    echo "EraE download failed with exit code ${exitstatus}"
+    exit "${exitstatus}"
+  fi
+
+  completed=$(find . -type f \( -name '*.erae'  -o -name '*.ere' \) | wc -l)
+  echo "📦 Download Progress: 100% complete (${completed} / ${total_files} files)"
+
+  echo "✅ All files downloaded to: ${download_dir}"
+
+  echo "Verifying checksums"
+  curl -fsS -O "${base_url}/checksums.txt"
+  curl -fsS -O "${base_url}/checksums_sha256.txt"
+  sha256sum -c checksums_sha256.txt --ignore-missing
+  echo "✅ All checksums verified"
+
+  popd > /dev/null
 }
 
 
@@ -46,14 +128,28 @@ if [[ -n "${ANCIENT_DIR}" && ! "${ANCIENT_DIR}" = ".nada" ]]; then
   __ancient="--datadir.ancient /var/lib/ancient"
 fi
 
-if [[ "${NETWORK}" =~ ^https?:// ]]; then
+config_dir_path=""
+if [[ "${NETWORK}" = "ephemery" ]]; then
+  config_dir_path="$(ephemery-config.sh /var/lib/geth/testnet/ephemery)"
+  # A new iteration has a new genesis, and the chain data of the old one is for a dead chain
+  __iteration="$(basename "$(dirname "${config_dir_path}")")"
+  if [[ -d /var/lib/geth/geth/chaindata/ && -f /var/lib/geth/ephemery-iteration ]]; then
+    __old_iteration="$(cat /var/lib/geth/ephemery-iteration)"
+    if [[ ! "${__old_iteration}" = "${__iteration}" ]]; then
+      echo "Ephemery reset from ${__old_iteration} to ${__iteration}, removing the old chain data"
+      rm -rf /var/lib/geth/geth/chaindata /var/lib/geth/geth/nodes
+      # A separate ancient dir holds the old chain's freezer, which Geth rejects as a genesis mismatch
+      if [[ -n "${__ancient}" ]]; then
+        find /var/lib/ancient -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+      fi
+    fi
+  fi
+elif [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "Custom testnet at ${NETWORK}"
   repo=$(awk -F'/tree/' '{print $1}' <<< "${NETWORK}")
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/geth/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/geth/testnet
     cd /var/lib/geth/testnet
@@ -63,12 +159,22 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/geth/testnet/${config_dir}/enodes.yaml" | paste -sd ",")"
-  networkid="$(jq -r '.config.chainId' "/var/lib/geth/testnet/${config_dir}/genesis.json")"
-  set +e
+  config_dir_path="/var/lib/geth/testnet/${config_dir}"
+fi
+if [[ -n "${config_dir_path}" ]]; then
+  if [[ -f "${config_dir_path}/enodes.yaml" ]]; then
+    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/enodes.yaml")"
+  else
+    bootnodes="$(paste -sd, "${config_dir_path}/enodes.txt")"
+  fi
+  networkid="$(jq -r '.config.chainId' "${config_dir_path}/genesis.json")"
   __network="--bootnodes=${bootnodes} --networkid=${networkid}"
   if [[ ! -d /var/lib/geth/geth/chaindata/ ]]; then
-    geth init --datadir /var/lib/geth "/var/lib/geth/testnet/${config_dir}/genesis.json"
+    # shellcheck disable=SC2086
+    geth init --datadir /var/lib/geth ${__ancient} "${config_dir_path}/genesis.json"
+  fi
+  if [[ -n "${__iteration:-}" ]]; then
+    echo "${__iteration}" > /var/lib/geth/ephemery-iteration
   fi
 else
   __network="--${NETWORK}"
@@ -133,6 +239,56 @@ case "${NODE_TYPE}" in
         ;;
     esac
     ;;
+  pre-prague-expiry)
+    case "${NETWORK}" in
+      mainnet|sepolia|hoodi)
+         echo "Geth minimal node with pre-Prague history expiry"
+        __prune="--history.chain postprague"
+        ;;
+      *)
+        echo "There is no pre-Prague history for ${NETWORK} network, \"pre-prague-expiry\" has no effect."
+        __prune=""
+        ;;
+    esac
+    ;;
+  pre-osaka-expiry)
+    case "${NETWORK}" in
+      mainnet|sepolia|hoodi)
+         echo "Geth minimal node with pre-Osaka history expiry"
+        __prune="--history.chain postosaka"
+        ;;
+      *)
+        echo "There is no pre-Osaka history for ${NETWORK} network, \"pre-osaka-expiry\" has no effect."
+        __prune=""
+        ;;
+    esac
+    ;;
+  stakewise-expiry)
+    case "${NETWORK}" in
+      mainnet)
+        echo "Geth minimal node with Stakewise history expiry"
+        __prune="--history.chain 25900000:0x2f9b90496c4accc7b18b0b162237478e0b0640b429ade1b5024635976b9f1fc9"
+        ;;
+      hoodi)
+        echo "Geth minimal node with Stakewise history expiry"
+        __prune="--history.chain 3580000:0x348a6d3910618b07365d0b994171d39a0e9859899230bd0a087386590eb21035"
+        ;;
+      *)
+        echo "There is no Stakewise expiry config for ${NETWORK} network, \"stakewise-expiry\" has no effect."
+        __prune=""
+        ;;
+    esac
+    ;;
+  custom)
+    echo "Geth default block retention; adjust as desired by \"EL_EXTRAS\" in \".env\""
+    __prune=""
+    ;;
+  use-cl-zkproofs)
+    echo "ERROR: The node type ${NODE_TYPE} is designed to not run an execution layer client"
+    echo "Remove \"geth.yml\" from configuration, or change the node type"
+    sleep 30
+    exit 1
+    ;;
   *)
     echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Geth implementation."
     sleep 30
@@ -140,20 +296,33 @@ case "${NODE_TYPE}" in
     ;;
 esac
 
-if [[ -n "${ERA_URL}" && ! -d /var/lib/geth/geth/chaindata && ! -d /var/lib/goethereum/geth/chaindata && ! "${NETWORK}" =~ ^https?:// ]]; then  # Fresh sync and named network
-  echo "Starting EraE history import from ${ERA_URL}"
-  geth --datadir /var/lib/geth "--${NETWORK}" --era.format erae --remotedb "${ERA_URL}"
-fi
-
-if [[ -n "${MAX_BLOBS}" ]]; then
-  __blobs="--miner.maxblobs ${MAX_BLOBS}"
-else
-  __blobs=""
+# EraE import
+if [[ -n "${ERE_URL}" && ! -f /var/lib/geth/ere-import-complete && ! "${NETWORK}" =~ ^https?:// \
+    && ! "${NETWORK}" = "ephemery" ]]; then  # Fresh sync and named network
+  if [[ "${NODE_TYPE}" =~ ^(full|archive|custom)$ ]]; then
+    echo "Starting EraE history import from ${ERE_URL}"
+    if [[ ! -f /var/lib/geth/ere-download-complete ]]; then
+      __download_ere_files "${ERE_URL}" /var/lib/geth/ere
+      touch /var/lib/geth/ere-download-complete
+    fi
+    # Rename legacy erae files. This can be removed once pandaops publishes .ere
+    find /var/lib/geth/ere -type f -name '*.erae' -exec sh -c '
+      for f; do
+        mv -- "$f" "${f%.erae}-noproofs.ere"
+      done
+    ' sh {} +
+    # shellcheck disable=SC2086
+    geth --datadir /var/lib/geth ${__ancient} ${__network} import-history --era.format ere /var/lib/geth/ere
+    touch /var/lib/geth/ere-import-complete
+    rm -rf /var/lib/geth/ere
+  else
+    echo "Geth is neither a full nor archive node, it uses ${NODE_TYPE}. Skipping EraE import."
+  fi
 fi
 
 # Traces
 if [[ "${COMPOSE_FILE}" =~ (grafana\.yml|grafana-rootless\.yml) ]]; then
-  __trace="--rpc.telemetry=true --rpc.telemetry.endpoint http://tempo:4317 --rpc.telemetry.instance-id geth --rpc.telemetry.sample-ratio 0.1"
+  __trace="--rpc.telemetry=true --rpc.telemetry.endpoint http://tempo:4318 --rpc.telemetry.instance-id geth --rpc.telemetry.sample-ratio 0.1"
   export OTEL_EXPORTER_OTLP_INSECURE=true
 else
   __trace=""
@@ -172,7 +341,10 @@ if [[ -f /var/lib/geth/prune-marker ]]; then
   fi
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__datadir} ${__ancient} ${__network} ${EL_EXTRAS} prune-history
+  exec "$@" ${__datadir} ${__ancient} ${__network} ${__prune} ${EL_EXTRAS} prune-history
+elif [[ -f /var/lib/geth/migrate-v2 ]]; then
+  rm -f /var/lib/geth/migrate-v2
+  exec geth db pebble-upgrade ${__datadir} ${__ancient} ${__network}
 else
-  exec "$@" ${__datadir} ${__ancient} ${__network} ${__prune} ${__blobs} ${__trace} ${__verbosity} ${EL_EXTRAS}
+  exec "$@" ${__datadir} ${__ancient} ${__network} ${__prune} ${__trace} ${__verbosity} ${EL_EXTRAS}
 fi

@@ -1,0 +1,85 @@
+name: Test Web3signer
+
+defaults:
+  run:
+    shell: bash
+
+# ethd skips the warnings it prints after a command
+env:
+  ETHD_FRONTEND: ci
+
+on:
+  schedule:
+    - cron: "17 3 * * *"  # Daily at 3:17 AM UTC
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, labeled, unlabeled]
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-web3signer:
+    if: |
+      contains(github.event.pull_request.labels.*.name, 'check-web3signer') ||
+      contains(github.event.pull_request.labels.*.name, 'test-all') ||
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Remove podman
+        run: sudo apt-get remove -y podman
+      - name: Create .env file
+        run: cp default.env .env
+      - name: Set Lighthouse/Geth/Web3signer
+        run: |
+          source ./.github/helper.sh
+          CORE_FILES=lighthouse.yml:geth.yml:web3signer.yml
+          var=CORE_FILES
+          set_value_in_env
+          FEE_RECIPIENT=0xDccf8451070a86183eE70D330C4c43b686E9CF86
+          var=FEE_RECIPIENT
+          set_value_in_env
+          WEB3SIGNER=true
+          var=WEB3SIGNER
+          set_value_in_env
+          W3S_DOCKER_TAG=latest
+          var=W3S_DOCKER_TAG
+          set_value_in_env
+          W3S_READ_ONLY=false
+          var=W3S_READ_ONLY
+          set_value_in_env
+      - name: Start Lighthouse/Geth/Web3signer
+        run: ./ethd up
+      - name: Pause for 30 seconds
+        run: sleep 30
+      - name: Test Web3signer
+        run: ./.github/check-service.sh web3signer
+      - name: Test PostgreSQL
+        run: ./.github/check-service.sh postgres
+      - name: Test version
+        run: ./ethd version
+      - name: Set distroless
+        run: |
+          source ./.github/helper.sh
+          W3S_DOCKER_TAG=latest-distroless
+          var=W3S_DOCKER_TAG
+          set_value_in_env
+          W3S_READ_ONLY=true
+          var=W3S_READ_ONLY
+          set_value_in_env
+      - name: Rebuild Web3signer image
+        run: ./ethd cmd build --pull
+      - name: Start Lighthouse/Geth/Web3signer
+        run: ./ethd up
+      - name: Pause for 30 seconds
+        run: sleep 30
+      - name: Test Web3signer
+        run: ./.github/check-service.sh web3signer
+      - name: Test PostgreSQL
+        run: ./.github/check-service.sh postgres
+      - name: Test version
+        run: ./ethd version

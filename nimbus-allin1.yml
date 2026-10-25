@@ -1,17 +1,19 @@
 # Nimbus consensus also handles validator keys: All In One
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 x-build: &nimbus-build
   context: ./nimbus
+  additional_contexts:
+    ephemery: ./ephemery
   dockerfile: ${NIM_DOCKERFILE}
   args:
-    - BUILD_TARGET=${NIM_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+    - BUILD_TARGET=${NIM_SRC_BUILD_TARGET:-$$(git describe --tags $$(git rev-list --tags --max-count=1))}
     - SRC_REPO=${NIM_SRC_REPO:-https://github.com/status-im/nimbus-eth2}
     - DOCKER_TAG=${NIM_DOCKER_TAG:-multiarch-latest}
     - DOCKER_VC_TAG=${NIM_DOCKER_VC_TAG:-multiarch-latest}
@@ -43,25 +45,31 @@ services:
       - jwtsecret:/var/lib/nimbus/ee-secret
     environment:
       - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
+      - ERC_URL=${ERC_URL:-}
       - NETWORK=${NETWORK}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
-      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}
+      - EPBS_BUILDERS=${EPBS_BUILDERS}
+      - EPBS_BUILDER_URLS=${EPBS_BUILDER_URLS}
+      - EPBS_BUILD_FACTOR=${EPBS_BUILD_FACTOR}
+      - EPBS_MIN_BID=${EPBS_MIN_BID}
       - MEV_NODE=${MEV_NODE}
       - DOPPELGANGER=${DOPPELGANGER}
-      - LOG_LEVEL=${LOG_LEVEL}
       - CL_EXTRAS=${CL_EXTRAS:-}
       - VC_EXTRAS=${VC_EXTRAS:-}
-      - NODE_TYPE=${CL_NODE_TYPE:-pruned}
+      - CL_NODE_TYPE=${CL_NODE_TYPE:-pruned}
       - GRAFFITI=${GRAFFITI:-}
       - DEFAULT_GRAFFITI=${DEFAULT_GRAFFITI:-false}
       - WEB3SIGNER=${WEB3SIGNER:-false}
       - W3S_NODE=${W3S_NODE}
       - EMBEDDED_VC=true
       - ENABLE_DIST_ATTESTATION_AGGR=${ENABLE_DIST_ATTESTATION_AGGR:-false}
+      - IPV6=${IPV6:-false}
+      - HOST_IP=${HOST_IP:-}
     ports:
       - ${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
       - ${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
+      - ${HOST_IP:-}:${CL_QUIC_PORT:-9001}:${CL_QUIC_PORT:-9001}/udp
     networks:
       default:
         aliases:
@@ -77,6 +85,7 @@ services:
       - --status-bar=false
       - --tcp-port=${CL_P2P_PORT:-9000}
       - --udp-port=${CL_P2P_PORT:-9000}
+      - --quic-port=${CL_QUIC_PORT:-9001}
       - ${CL_MAX_PEER_COUNT:+--max-peers=${CL_MAX_PEER_COUNT}}
       - --el=${EL_NODE}
       - --jwt-secret=/var/lib/nimbus/ee-secret/jwtsecret
@@ -93,14 +102,16 @@ services:
       - --keymanager-allow-origin=*
       - --keymanager-token-file=/var/lib/nimbus/api-token.txt
       - --suggested-fee-recipient=${FEE_RECIPIENT}
+      - --log-level=${LOG_LEVEL}
     labels:
       - metrics.scrape=true
       - metrics.path=/metrics
       - metrics.port=8008
       - metrics.instance=consensus
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
-  wipe-db:
+  wipe-cl-db:
     profiles: ["tools"]
     restart: "no"
     image: alpine:3
@@ -112,8 +123,9 @@ services:
     command:
       - |
         rm -rf /var/lib/nimbus/db/*
-        rm /var/lib/nimbus/setupdone
+        rm -f /var/lib/nimbus/setupdone
 
+# Deprecate and remove after Hegotá
   validator-exit:
     profiles: ["tools"]
     restart: "no"
@@ -132,7 +144,7 @@ services:
       - --log-level=${LOG_LEVEL}
       - deposits
       - exit
-      - --rest-url=http://consensus:5052
+      - --rest-url=http://consensus:${CL_REST_PORT:-5052}
       - --validator=
 
   validator-keys:
@@ -154,8 +166,6 @@ services:
       - WEB3SIGNER=${WEB3SIGNER:-false}
       - W3S_NODE=${W3S_NODE}
       - CL_NODE=${CL_NODE}
-    depends_on:
-      - consensus
     entrypoint:
       - keymanager.sh
       - /var/lib/nimbus/api-token.txt

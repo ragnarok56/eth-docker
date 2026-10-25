@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
+set -Eeuo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
   chown -R teku:teku /var/lib/teku
   exec gosu teku docker-entrypoint.sh "$@"
+fi
+
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
 fi
 
 
@@ -20,8 +26,31 @@ __strip_empty_args() {
 
 __normalize_int() {
   local v=$1
-  if [[ "${v}" =~ ^[0-9]+$ ]]; then
-    v=$((10#${v}))
+  # Strip leading zeros as text. Arithmetic would overflow on the largest boost factors
+  if [[ "${v}" =~ ^0*([0-9]+)$ ]]; then
+    v="${BASH_REMATCH[1]}"
+  fi
+  printf '%s' "${v}"
+}
+
+__normalize_float() {
+  local v=$1
+  local int_part
+  local frac_part
+
+  if [[ "${v}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    int_part="${v%%.*}"
+    frac_part=""
+    if [[ "${v}" == *.* ]]; then
+      frac_part="${v#*.}"
+    fi
+    # Strip leading zeros as text, as in __normalize_int
+    [[ "${int_part}" =~ ^0*([0-9]+)$ ]] && int_part="${BASH_REMATCH[1]}"
+    if [[ -n "${frac_part}" ]]; then
+      v="${int_part}.${frac_part}"
+    else
+      v="${int_part}"
+    fi
   fi
   printf '%s' "${v}"
 }
@@ -84,8 +113,6 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/teku/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/teku/testnet
     cd /var/lib/teku/testnet
@@ -95,47 +122,146 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/teku/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
-  set +e
-  __checkpoint_sync="--initial-state=/var/lib/teku/testnet/${config_dir}/genesis.ssz --ignore-weak-subjectivity-period-enabled=true"
-  __network="--network=/var/lib/teku/testnet/${config_dir}/config.yaml --p2p-discovery-bootnodes=${bootnodes}"
+  config_dir_path="/var/lib/teku/testnet/${config_dir}"
+  if [[ -f "${config_dir_path}/bootstrap_nodes.txt" ]]; then
+    bootnodes="$(paste -sd, "${config_dir_path}/bootstrap_nodes.txt")"
+  else
+    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/bootstrap_nodes.yaml")"
+  fi
+  __checkpoint_sync="--initial-state=${config_dir_path}/genesis.ssz --ignore-weak-subjectivity-period-enabled=true"
+  __network="--network=${config_dir_path}/config.yaml --p2p-discovery-bootnodes=${bootnodes}"
 else
   __network="--network=${NETWORK}"
 fi
 
 # Check whether we should use MEV Boost
-if [[ "${MEV_BOOST}" = "true" ]]; then
+# Adjust RIGHT after each network's Glamsterdam hardfork
+if [[ "${MEV_BOOST}" = "true" && "${NETWORK}" =~ ^(hoodi|mainnet)$ ]]; then
   __mev_boost="--builder-endpoint=${MEV_NODE:-http://mev-boost:18550}"
   echo "MEV Boost enabled"
-  __mev_boost+=" --validators-builder-registration-default-enabled"
-  build_factor="$(__normalize_int "${MEV_BUILD_FACTOR}")"
+  if [[ "${EMBEDDED_VC}" = "true" ]]; then
+    __mev_boost+=" --validators-builder-registration-default-enabled"
+  fi
+  # Teku has the build factor on the CL, which is unusual
+  build_factor="$(__normalize_int "${EPBS_BUILD_FACTOR}")"
+  if [[ "${build_factor}" = "maxprofit" ]]; then
+    build_factor=100  # 100 means profit maximization, as in the keymanager API
+  fi
   case "${build_factor}" in
-    0)
+    0|local)
       __mev_boost=""
       __mev_factor=""
-      echo "Disabled MEV Boost because MEV_BUILD_FACTOR is 0."
-      echo "WARNING: This conflicts with MEV_BOOST true. Set factor in a range of 1 to 100"
+      echo "Disabled MEV Boost because EPBS_BUILD_FACTOR is ${build_factor}."
+      echo "WARNING: This conflicts with MEV_BOOST true. Set a factor above 0, or maxprofit or always"
       ;;
-    [1-9]|[1-9][0-9])
-      __mev_factor="--builder-bid-compare-factor=${build_factor}"
-      echo "Enabled MEV Build Factor of ${build_factor}"
-      ;;
-    100)
+    always)
       __mev_factor="--builder-bid-compare-factor=BUILDER_ALWAYS"
-      echo "Always prefer MEV builder blocks, MEV_BUILD_FACTOR 100"
+      echo "Always prefer MEV builder blocks, EPBS_BUILD_FACTOR always"
       ;;
     "")
       __mev_factor=""
       echo "Use default --builder-bid-compare-factor"
       ;;
     *)
-      __mev_factor=""
-      echo "WARNING: MEV_BUILD_FACTOR has an invalid value of \"${build_factor}\""
+      if [[ "${build_factor}" =~ ^[1-9][0-9]{0,19}$ ]]; then
+        # Compare as text, bash arithmetic cannot hold uint64. Equal length makes this a numeric comparison
+        # shellcheck disable=SC2071
+        if [[ ${#build_factor} -eq 20 && "${build_factor}" > "18446744073709551615" ]]; then
+          echo "EPBS_BUILD_FACTOR ${build_factor} exceeds the 64-bit maximum, capping it to 18446744073709551615"
+          build_factor=18446744073709551615
+        fi
+        __mev_factor="--builder-bid-compare-factor=${build_factor}"
+        echo "Enabled MEV Build Factor of ${build_factor}"
+      else
+        __mev_factor=""
+        echo "WARNING: EPBS_BUILD_FACTOR has an invalid value of \"${build_factor}\""
+      fi
       ;;
   esac
 else
+  if [[ "${MEV_BOOST}" = "true" ]]; then
+    echo "MEV_BOOST is true, but MEV Boost is not used on ${NETWORK}. Ignoring it."
+  fi
   __mev_boost=""
   __mev_factor=""
+fi
+
+if [[ "${EMBEDDED_VC}" = "true" ]]; then
+  # Adjust RIGHT after each network's Glamsterdam hardfork
+  # MEV Boost implies ePBS builders only on networks that haven't forked yet
+  if [[ "${MEV_BOOST}" = "true" && "${NETWORK}" =~ ^(hoodi|mainnet)$ ]]; then
+    __mev_active=1
+  else
+    __mev_active=0
+  fi
+
+  # Check whether we should use ePBS
+  if [[ "${__mev_active}" -eq 1 || "${EPBS_BUILDERS}" = "true" ]]; then
+    if [[ "${__mev_active}" -eq 1 ]]; then
+      if [[ "${EPBS_BUILDERS}" = "false" ]]; then
+        echo "ePBS builders are meant to be disabled, but MEV Boost is true, which will enable them anyway."
+        echo "Update Eth Docker again after ${NETWORK}'s Glamsterdam hard fork to fix this."
+      else
+        echo "Update Eth Docker again after mainnet Glamsterdam hard fork, expected December 2026, to remove MEV Boost."
+      fi
+    fi
+    if [[ "${EPBS_BUILDERS}" = "true" ]]; then
+      echo "ePBS builders enabled"
+    fi
+
+    build_factor="$(__normalize_int "${EPBS_BUILD_FACTOR}")"
+    if [[ "${build_factor}" = "maxprofit" ]]; then
+      build_factor=100  # 100 means profit maximization, as in the keymanager API
+    fi
+    case "${build_factor}" in
+      0|local)
+        __epbs="--Xbuilder-boost-factor=0"
+        echo "Build blocks locally, use ePBS builders as fallback. EPBS_BUILD_FACTOR is ${build_factor}."
+        ;;
+      always)
+        __epbs="--Xbuilder-boost-factor=18446744073709551615"
+        echo "Always prefer ePBS builder blocks, EPBS_BUILD_FACTOR always"
+        ;;
+      "")
+        __epbs=""
+        echo "Use default --Xbuilder-boost-factor"
+        ;;
+      *)
+        if [[ "${build_factor}" =~ ^[1-9][0-9]{0,19}$ ]]; then
+          # Compare as text, bash arithmetic cannot hold uint64. Equal length makes this a numeric comparison
+          # shellcheck disable=SC2071
+          if [[ ${#build_factor} -eq 20 && "${build_factor}" > "18446744073709551615" ]]; then
+            echo "EPBS_BUILD_FACTOR ${build_factor} exceeds the 64-bit maximum, capping it to 18446744073709551615"
+            build_factor=18446744073709551615
+          fi
+          __epbs="--Xbuilder-boost-factor=${build_factor}"
+          echo "Enabled ePBS Build Factor of ${build_factor}"
+        else
+          __epbs=""
+          echo "WARNING: EPBS_BUILD_FACTOR has an invalid value of \"${build_factor}\""
+        fi
+        ;;
+    esac
+    if [[ -n "${EPBS_MIN_BID}" ]]; then
+      min_bid="$(__normalize_float "${EPBS_MIN_BID}")"
+      if [[ "${min_bid}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        min_bid_gwei=$(awk -v v="${min_bid}" 'BEGIN{printf "%.0f", v * 1000000000}')
+        __epbs+=" --Xbuilder-min-bid=${min_bid_gwei}"
+      else
+        echo "WARNING: EPBS_MIN_BID has an invalid value of \"${EPBS_MIN_BID}\", ignoring"
+      fi
+    fi
+  # Compose keeps the newlines of a multi-line EPBS_BUILDER_URLS, which would create an empty entry from "url,<newline>"
+    builder_urls="${EPBS_BUILDER_URLS//[[:space:]]/}"
+    if [[ -n "${builder_urls}" ]]; then
+      __epbs+=" --Xbuilder-urls=${builder_urls}"
+    fi
+  else
+    __epbs="--Xbuilder-boost-factor=0"
+    echo "Build blocks locally, use ePBS builders as fallback"
+  fi
+else
+  __epbs=""
 fi
 
 # Check whether we should send stats to beaconcha.in
@@ -147,7 +273,7 @@ else
 fi
 
 # Check whether we should enable doppelganger protection
-if [[ "${DOPPELGANGER}" = "true" ]]; then
+if [[ "${EMBEDDED_VC}" = "true" && "${DOPPELGANGER}" = "true" ]]; then
   __doppel="--doppelganger-detection-enabled=true"
   echo "Doppelganger protection enabled, VC will pause for 2 epochs"
 else
@@ -156,7 +282,7 @@ fi
 
 case "${NODE_TYPE}" in
   archive)
-    echo "Teku archive node without pruning"
+    echo "Teku archive node without history pruning"
     __prune="--data-storage-mode=ARCHIVE"
     ;;
   full)
@@ -191,38 +317,37 @@ fi
 
 if [[ "${IPV6}" = "true" ]]; then
   echo "Configuring Teku to listen on IPv6 ports"
-  __ipv6="--p2p-interface 0.0.0.0,:: --p2p-port-ipv6 ${CL_IPV6_P2P_PORT:-9090}"
-# ENR discovery on v6 is not yet working, likely too few peers. Manual for now
-  ipv4_pattern="^([0-9]{1,3}\.){3}[0-9]{1,3}$"
-  ipv6_pattern="^[0-9A-Fa-f]{1,4}:"  # Sufficient to check the start
-  set +e
-  public_v4=$(curl -s -4 ifconfig.me)
-  public_v6=$(curl -s -6 ifconfig.me)
-  set -e
-  valid_v4=0
-  if [[ "${public_v4}" =~ ${ipv4_pattern} ]]; then
-    valid_v4=1
-  fi
-  if [[ "a{$public_v6}" =~ ${ipv6_pattern} ]]; then
-    if [[ "${valid_v4}" -eq 1 ]]; then
-      __ipv6+=" --p2p-advertised-ips ${public_v4},${public_v6}"
-    else
-      __ipv6+=" --p2p-advertised-ip ${public_v6}"
-    fi
-  fi
+  __ipv6="--p2p-interface 0.0.0.0,:: --p2p-port-ipv6 ${CL_IPV6_P2P_PORT:-9010} --p2p-quic-port-ipv6 ${CL_IPV6_QUIC_PORT:-9011}"
 else
   __ipv6=""
+fi
+
+if [[ "${EMBEDDED_VC}" = "true" && "${DEFAULT_GRAFFITI}" != "true" ]]; then
+  __graffiti_args=(--validators-graffiti="${GRAFFITI}")
+else
+  __graffiti_args=()
 fi
 
 __strip_empty_args "$@"
 set -- "${__args[@]}"
 
-if [[ "${DEFAULT_GRAFFITI}" = "true" ]]; then
+i=0
+while true; do
+  if [ -f /var/lib/teku/ee-secret/jwtsecret ]; then
+    break
+  else
+    if [[ "$i" -eq 5 ]]; then
+      echo "Did not see the JWT secret file six times in a row. This is either a bug or a very slow execution layer client startup."
+      echo "Starting consensus layer client anyway: It may fail."
+      break
+    else
+      echo "Waiting for JWT secret file to be created by execution layer client"
+      sleep 5
+      ((++i))
+    fi
+  fi
+done
+
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__mev_factor} ${__checkpoint_sync} ${__prune} ${__beacon_stats} ${__doppel} ${__ipv6} ${CL_EXTRAS} ${VC_EXTRAS}
-else
-# Word splitting is desired for the command line parameters
-# shellcheck disable=SC2086
-  exec "$@" ${__network} "--validators-graffiti=${GRAFFITI}" ${__w3s_url} ${__mev_boost} ${__mev_factor} ${__checkpoint_sync} ${__prune} ${__beacon_stats} ${__doppel} ${__ipv6} ${CL_EXTRAS} ${VC_EXTRAS}
-fi
+exec "$@" ${__network} ${__w3s_url} "${__graffiti_args[@]}" ${__mev_boost} ${__mev_factor} ${__epbs} ${__checkpoint_sync} ${__prune} ${__beacon_stats} ${__doppel} ${__ipv6} ${CL_EXTRAS} ${VC_EXTRAS}

@@ -4,39 +4,44 @@ defaults:
   run:
     shell: bash
 
+# ethd skips the warnings it prints after a command
+env:
+  ETHD_FRONTEND: ci
+
 on:
-  push:
+  schedule:
+    - cron: "17 3 * * *"  # Daily at 3:17 AM UTC
+  workflow_dispatch:
   pull_request:
     types: [opened, synchronize, labeled, unlabeled]
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-ethd:
     if: |
-      contains(github.event.pull_request.labels.*.name, 'test-ethd') ||
+      contains(github.event.pull_request.labels.*.name, 'check-ethd') ||
       contains(github.event.pull_request.labels.*.name, 'test-all') ||
-      github.event_name == 'push'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-15-intel]
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Set up Docker buildx
-        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
-        uses: docker/setup-buildx-action@v4
-      - name: Set up Docker on macOS
-        if: ${{ startsWith(matrix.os, 'macos-') }}
-        uses: douglascamata/setup-docker-macos-action@d5ccc6aae0ce23e7700154f5e63cc53e6433ac48
-      - name: Install Expect
-        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
-        run: sudo apt-get install -y expect whiptail
-      - name: Prerequisites on macOS
-        if: ${{ startsWith(matrix.os, 'macos-') }}
-        run: brew install bash newt coreutils expect gawk
+      - name: Prerequisites on Ubuntu
+        run: |
+          sudo apt-get install -y whiptail
+          sudo apt-get remove -y podman
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: '3.15'
+          enable-cache: true
+          cache-dependency-glob: .github/test-tools/uv.lock
       - name: Use default.env
         run: cp default.env .env
       - name: Set old .env version
@@ -45,23 +50,100 @@ jobs:
           ENV_VERSION=42
           var=ENV_VERSION
           set_value_in_env
+          COMPOSE_FILE=teku.yml:besu.yml
+          var=COMPOSE_FILE
+          set_value_in_env
       - name: Test ethd update
         run: ./ethd update --debug --non-interactive
+        env:
+          ETHD_FRONTEND: ""  # Exercise the warnings ethd prints after a command
+      - name: Test .env migration edge cases
+        run: ./.github/test-ethd-migrate.sh
+      - name: Test double VC check
+        run: ./.github/test-double-vc.sh
       - name: Remove .env
         run: rm .env
       - name: Test ethd config defaults
-        run: expect ./.github/test-ethd-config.exp all-defaults
+        run: uv run --locked --project .github/test-tools ./.github/test-ethd-config.py all-defaults
         env:
           TERM: xterm
-      - name: Test ethd config no checkpoint
-        run: expect ./.github/test-ethd-config.exp no-checkpoint
+      - name: Test ethd config no epbs
+        run: uv run --locked --project .github/test-tools ./.github/test-ethd-config.py no-epbs
         env:
           TERM: xterm
-      - name: Test ethd config no mev
-        run: expect ./.github/test-ethd-config.exp no-mev
-        env:
-          TERM: xterm
+      - name: Test ethd config keeps web3signer.yml
+        run: grep -q '^CORE_FILES=.*web3signer\.yml' .env
       - name: Test ethd config no grafana
-        run: expect ./.github/test-ethd-config.exp no-grafana
+        run: uv run --locked --project .github/test-tools ./.github/test-ethd-config.py no-grafana
+        env:
+          TERM: xterm
+
+  # ethd's shell logic on macOS userland. Hosted macOS runners have no nested virtualization, so no
+  # container runtime can start there: Docker is stubbed, and the Ubuntu job covers the real Docker runs.
+  # It waits for its own label.
+  test-ethd-macos:
+    if: contains(github.event.pull_request.labels.*.name, 'check-ethd-macos')
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Prerequisites on macOS
+        run: brew install bash newt coreutils gawk
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: '3.15'
+          enable-cache: true
+          cache-dependency-glob: .github/test-tools/uv.lock
+      - name: Stub Docker
+        run: |
+          mkdir -p "${RUNNER_TEMP}/stub-bin"
+          cp ./.github/macos-docker-stub.sh "${RUNNER_TEMP}/stub-bin/docker"
+          echo "${RUNNER_TEMP}/stub-bin" >> "${GITHUB_PATH}"
+          echo "DOCKER_STUB_LOG=${RUNNER_TEMP}/docker-stub.log" >> "${GITHUB_ENV}"
+      - name: Use default.env
+        run: cp default.env .env
+      - name: Set old .env version
+        run: |
+          source ./.github/helper.sh
+          ENV_VERSION=42
+          var=ENV_VERSION
+          set_value_in_env
+          COMPOSE_FILE=teku.yml:besu.yml
+          var=COMPOSE_FILE
+          set_value_in_env
+      - name: Test ethd update
+        run: ./ethd update --debug --non-interactive
+      # ethd exits 0 when it cannot call Docker, so check that update got as far as pulling
+      - name: Check ethd update ran
+        run: |
+          cat "${DOCKER_STUB_LOG}"
+          grep -qx 'compose --profile tools pull' "${DOCKER_STUB_LOG}"
+      # On macOS the space report uses gawk and busybox df, here answered by the stub
+      - name: Test ethd space
+        run: ./ethd space
+      # "keys prepare-address-change" downloads ethdo and jq on the host; macOS has no wget
+      - name: Test GitHub release downloads
+        run: ./.github/test-get-github-release.sh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}  # Hosted macOS runners share IPs, and use up the API's rate limit
+      - name: Test .env migration edge cases
+        run: ./.github/test-ethd-migrate.sh
+      - name: Remove .env
+        run: rm .env
+      - name: Test ethd config defaults
+        run: uv run --locked --project .github/test-tools ./.github/test-ethd-config.py all-defaults
+        env:
+          TERM: xterm
+      - name: Test ethd config no epbs
+        run: uv run --locked --project .github/test-tools ./.github/test-ethd-config.py no-epbs
+        env:
+          TERM: xterm
+      - name: Test ethd config keeps web3signer.yml
+        run: grep -q '^CORE_FILES=.*web3signer\.yml' .env
+      - name: Test ethd config no grafana
+        run: uv run --locked --project .github/test-tools ./.github/test-ethd-config.py no-grafana
         env:
           TERM: xterm

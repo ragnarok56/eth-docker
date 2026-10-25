@@ -1,0 +1,4 @@
+*
+!config.alloy
+!*.sample
+!.gitignore

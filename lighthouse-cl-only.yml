@@ -1,18 +1,20 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 x-build: &lh-build
   context: ./lighthouse
+  additional_contexts:
+    ephemery: ./ephemery
   dockerfile: ${LH_DOCKERFILE}
   args:
     - BUILD_TARGET=${LH_SRC_BUILD_TARGET:-stable}
     - SRC_REPO=${LH_SRC_REPO:-https://github.com/sigp/lighthouse}
-    - DOCKER_TAG=${LH_DOCKER_TAG:-latest-modern}
+    - DOCKER_TAG=${LH_DOCKER_TAG:-latest}
     - DOCKER_REPO=${LH_DOCKER_REPO:-sigp/lighthouse}
 
 services:
@@ -37,8 +39,10 @@ services:
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - CL_EXTRAS=${CL_EXTRAS:-}
       - NODE_TYPE=${CL_NODE_TYPE:-pruned}
+      - EL_NODE_TYPE=${EL_NODE_TYPE}
       - EL_NODE=${EL_NODE}
       - IPV6=${IPV6:-false}
+      - HOST_IP=${HOST_IP:-}
       - CL_P2P_PORT=${CL_P2P_PORT:-9000}
       - CL_QUIC_PORT=${CL_QUIC_PORT:-9001}
       - NETWORK=${NETWORK}
@@ -89,6 +93,7 @@ services:
       - metrics.port=8008
       - metrics.instance=consensus
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
   set-cl-prune-marker:
     profiles: ["tools"]

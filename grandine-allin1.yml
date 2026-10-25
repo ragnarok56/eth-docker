@@ -1,10 +1,10 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 
 x-build: &gr-build
@@ -33,7 +33,10 @@ services:
       - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
-      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}
+      - EPBS_BUILDERS=${EPBS_BUILDERS}
+      - EPBS_BUILDER_URLS=${EPBS_BUILDER_URLS}
+      - EPBS_BUILD_FACTOR=${EPBS_BUILD_FACTOR}
+      - EPBS_MIN_BID=${EPBS_MIN_BID}
       - MEV_NODE=${MEV_NODE}
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
@@ -47,6 +50,7 @@ services:
       - DOPPELGANGER=${DOPPELGANGER:-false}
       - NODE_TYPE=${CL_NODE_TYPE:-pruned}
       - IPV6=${IPV6:-false}
+      - HOST_IP=${HOST_IP:-}
       - CL_P2P_PORT=${CL_P2P_PORT:-9000}
       - CL_QUIC_PORT=${CL_QUIC_PORT:-9001}
       - NETWORK=${NETWORK}
@@ -111,8 +115,9 @@ services:
       - metrics.port=8008
       - metrics.instance=consensus
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
-  wipe-db:
+  wipe-cl-db:
     profiles: ["tools"]
     restart: "no"
     image: alpine:3
@@ -148,8 +153,6 @@ services:
       - WEB3SIGNER=${WEB3SIGNER:-false}
       - W3S_NODE=${W3S_NODE}
       - CL_NODE=${CL_NODE}
-    depends_on:
-      - consensus
     entrypoint:
       - keymanager.sh
       - /var/lib/grandine/${NETWORK}/validator/api-token.txt

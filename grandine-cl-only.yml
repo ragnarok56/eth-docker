@@ -1,10 +1,10 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 
 x-build: &gr-build
@@ -45,6 +45,7 @@ services:
       - DEFAULT_GRAFFITI=true
       - NODE_TYPE=${CL_NODE_TYPE:-pruned}
       - IPV6=${IPV6:-false}
+      - HOST_IP=${HOST_IP:-}
       - CL_P2P_PORT=${CL_P2P_PORT:-9000}
       - CL_QUIC_PORT=${CL_QUIC_PORT:-9001}
       - NETWORK=${NETWORK}
@@ -100,19 +101,7 @@ services:
       - metrics.port=8008
       - metrics.instance=consensus
       - metrics.network=${NETWORK}
-
-  wipe-db:
-    profiles: ["tools"]
-    restart: "no"
-    image: alpine:3
-    user: "10002"
-    volumes:
-      - grandineconsensus-data:/var/lib/grandine
-      - /etc/localtime:/etc/localtime:ro
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        rm -rf /var/lib/grandine/${NETWORK}/beacon/*
+      - logs.collect=true
 
 volumes:
   grandineconsensus-data:

@@ -6,6 +6,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exec gosu prysmconsensus docker-entrypoint.sh "$@"
 fi
 
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
+fi
+
 
 # Because we're oh-so-clever with + substitution and maxpeers, we may have empty args. Remove them
 __strip_empty_args() {
@@ -32,14 +37,27 @@ if [[ -O /var/lib/prysm/ee-secret/jwtsecret ]]; then
   chmod 666 /var/lib/prysm/ee-secret/jwtsecret
 fi
 
-if [[ "${NETWORK}" =~ ^https?:// ]]; then
+config_dir_path=""
+if [[ "${NETWORK}" = "ephemery" ]]; then
+  config_dir_path="$(ephemery-config.sh /var/lib/prysm/testnet/ephemery)"
+  # A new iteration has a new genesis, and the beacon DB of the old one is for a dead chain.
+  # ee-secret is the JWT secret volume and testnet holds the Ephemery configs; both stay.
+  __iteration="$(basename "$(dirname "${config_dir_path}")")"
+  if [[ -f /var/lib/prysm/ephemery-iteration ]]; then
+    __old_iteration="$(cat /var/lib/prysm/ephemery-iteration)"
+    if [[ ! "${__old_iteration}" = "${__iteration}" ]]; then
+      echo "Ephemery reset from ${__old_iteration} to ${__iteration}, removing the old beacon chain data"
+      find /var/lib/prysm -mindepth 1 -maxdepth 1 ! -name ee-secret ! -name testnet \
+        ! -name ephemery-iteration -exec rm -rf {} +
+    fi
+  fi
+  echo "${__iteration}" > /var/lib/prysm/ephemery-iteration
+elif [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "Custom testnet at ${NETWORK}"
   repo=$(awk -F'/tree/' '{print $1}' <<< "${NETWORK}")
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/prysm/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/prysm/testnet
     cd /var/lib/prysm/testnet
@@ -49,11 +67,17 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/prysm/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
-  deploy_block=$(cat "/var/lib/prysm/testnet/${config_dir}/deposit_contract_block.txt")
-  set +e
-  __network="--chain-config-file=/var/lib/prysm/testnet/${config_dir}/config.yaml --genesis-state=/var/lib/prysm/testnet/${config_dir}/genesis.ssz \
---enable-debug-rpc-endpoints --bootstrap-node=${bootnodes} --contract-deployment-block=${deploy_block}"
+  config_dir_path="/var/lib/prysm/testnet/${config_dir}"
+fi
+if [[ -n "${config_dir_path}" ]]; then
+  if [[ -f "${config_dir_path}/bootstrap_nodes.txt" ]]; then
+    bootnodes="$(paste -sd, "${config_dir_path}/bootstrap_nodes.txt")"
+  else
+    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/bootstrap_nodes.yaml")"
+  fi
+  deploy_block=$(cat "${config_dir_path}/deposit_contract_block.txt")
+  __network="--chain-config-file=${config_dir_path}/config.yaml --genesis-state=${config_dir_path}/genesis.ssz \
+--bootstrap-node=${bootnodes} --contract-deployment-block=${deploy_block}"
 else
   __network="--${NETWORK}"
 fi
@@ -61,24 +85,34 @@ fi
 # Check whether we should rapid sync
 if [[ -n "${CHECKPOINT_SYNC_URL:+x}" ]]; then
   __checkpoint_sync="--checkpoint-sync-url=${CHECKPOINT_SYNC_URL} --enable-backfill"
+  if [[ "${NODE_TYPE}" =~ archive$ ]]; then
+    __checkpoint_sync+=" --backfill-oldest-slot 0"
+  fi
   echo "Checkpoint sync enabled"
 else
   __checkpoint_sync=""
 fi
 
 # Check whether we should use MEV Boost
-if [[ "${MEV_BOOST}" = "true" ]]; then
+# Adjust RIGHT after each network's Glamsterdam hardfork
+if [[ "${MEV_BOOST}" = "true" && "${NETWORK}" =~ ^(hoodi|mainnet)$ ]]; then
   __mev_boost="--http-mev-relay=${MEV_NODE:-http://mev-boost:18550}"
   echo "MEV Boost enabled"
-  echo "No MEV Build Factor configured: Prysm doesn't support it, or Eth Docker doesn't know how."
 else
+  if [[ "${MEV_BOOST}" = "true" ]]; then
+    echo "MEV_BOOST is true, but MEV Boost is not used on ${NETWORK}. Ignoring it."
+  fi
   __mev_boost=""
 fi
 
 case "${NODE_TYPE}" in
   archive)
-    echo "Prysm archive node without pruning"
-    __prune="--slots-per-archive-point=32 --blob-retention-epochs=4294967295"
+    echo "Prysm archive node without history pruning"
+    __prune="--slots-per-archive-point=32 --enable-archive"
+    ;;
+  blob-archive)
+    echo "Prysm blob archive node without blob or history pruning"
+    __prune="--slots-per-archive-point=32 --blob-retention-epochs=4294967295 --enable-archive"
     ;;
   full)
     echo "Prysm node without beacon DB pruning"
@@ -97,6 +131,23 @@ esac
 
 __strip_empty_args "$@"
 set -- "${__args[@]}"
+
+i=0
+while true; do
+  if [ -f /var/lib/prysm/ee-secret/jwtsecret ]; then
+    break
+  else
+    if [[ "$i" -eq 5 ]]; then
+      echo "Did not see the JWT secret file six times in a row. This is either a bug or a very slow execution layer client startup."
+      echo "Starting consensus layer client anyway: It may fail."
+      break
+    else
+      echo "Waiting for JWT secret file to be created by execution layer client"
+      sleep 5
+      ((++i))
+    fi
+  fi
+done
 
 if [[ "${NETWORK}" = "sepolia" ]]; then
   __genesis_file="/var/lib/prysm/genesis.ssz"

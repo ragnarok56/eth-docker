@@ -1,7 +1,5 @@
 # Eth Docker: Docker automation for Ethereum nodes.
 
-[![GitPOAP Badge](https://public-api.gitpoap.io/v1/repo/eth-educators/eth-docker/badge)](https://www.gitpoap.io/gh/eth-educators/eth-docker)
-
 Eth Docker, a simple yet configurable way to run [Ethereum](https://ethereum.org/roadmap/) nodes.
 
 ## Getting Started
@@ -30,6 +28,6 @@ please read the [contribution guidelines](CONTRIBUTING.md) so you can run lint c
 ## Version
 
 Eth Docker uses calendar versioning, to make it easy to align with known hardfork dates.
-Eth Docker will release a new version for breaking changes, so you can pin that along your pinned client versions.
+Eth Docker will release a new version for breaking changes. If you use pinned client versions, pin Eth Docker as well.
 
-This is Eth Docker v26.3.1-dev
+This is Eth Docker v26.11.0-dev

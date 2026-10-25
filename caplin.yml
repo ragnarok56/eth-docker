@@ -5,3 +5,28 @@ services:
       # Caplin consensus P2P ports
       - "${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp"
       - "${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp"
+      - "${HOST_IP:-}:${CL_QUIC_PORT:-9001}:${CL_QUIC_PORT:-9001}/udp"
+    networks:
+      default:
+        aliases:
+          # The CL runs inside execution, so answer to the names of a consensus service
+          - consensus
+          - eth2
+          # This allows multiple Eth Docker stacks all connected to the same bridge network
+          - ${CL_ALIAS:-default-consensus}
+
+  wipe-cl-db:
+    profiles: ["tools"]
+    restart: "no"
+    image: alpine:3
+    user: "10001"
+    volumes:
+      - erigon-el-data:/var/lib/erigon
+      - /etc/localtime:/etc/localtime:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        rm -rf /var/lib/erigon/caplin/*
+
+volumes:
+  erigon-el-data:

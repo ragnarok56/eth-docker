@@ -1,4 +1,4 @@
-# hadolint global ignore=DL3007,DL3008,DL3059
+# hadolint global ignore=DL3007,DL3008,DL3059,DL3066
 ARG DOCKER_TAG=latest
 ARG DOCKER_REPO=chainsafe/lodestar
 
@@ -16,7 +16,6 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install 
   bash \
   git \
   git-lfs \
-  curl \
   && gosu nobody true \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*

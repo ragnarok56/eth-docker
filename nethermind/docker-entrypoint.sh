@@ -7,6 +7,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exec gosu nethermind "${BASH_SOURCE[0]}" "$@"
 fi
 
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
+fi
+
 
 # Because we're oh-so-clever with + substitution and maxpeers, we may have empty args. Remove them
 __strip_empty_args() {
@@ -22,8 +27,9 @@ __strip_empty_args() {
 
 __normalize_int() {
   local v=$1
-  if [[ "${v}" =~ ^[0-9]+$ ]]; then
-    v=$((10#${v}))
+  # Strip leading zeros as text. Arithmetic would overflow on the largest boost factors
+  if [[ "${v}" =~ ^0*([0-9]+)$ ]]; then
+    v="${BASH_REMATCH[1]}"
   fi
   printf '%s' "${v}"
 }
@@ -49,15 +55,33 @@ if [[ -O /var/lib/nethermind/ee-secret/jwtsecret ]]; then
   chmod 666 /var/lib/nethermind/ee-secret/jwtsecret
 fi
 
-if [[ "${NETWORK}" =~ ^https?:// ]]; then
+# This will be set by custom network code or named network node type code
+__prune=""
+
+config_dir_path=""
+if [[ "${NETWORK}" = "ephemery" ]]; then
+  config_dir_path="$(ephemery-config.sh /var/lib/nethermind/testnet/ephemery)"
+  # Ephemery ships no chainspec.json; Nethermind reads the Geth genesis.json just as well
+  __chainspec="${config_dir_path}/genesis.json"
+  # A new iteration has a new genesis, and the chain data of the old one is for a dead chain.
+  # ee-secret is the JWT secret volume and testnet holds the Ephemery configs; both stay.
+  __iteration="$(basename "$(dirname "${config_dir_path}")")"
+  if [[ -f /var/lib/nethermind/ephemery-iteration ]]; then
+    __old_iteration="$(cat /var/lib/nethermind/ephemery-iteration)"
+    if [[ ! "${__old_iteration}" = "${__iteration}" ]]; then
+      echo "Ephemery reset from ${__old_iteration} to ${__iteration}, removing the old chain data"
+      find /var/lib/nethermind -mindepth 1 -maxdepth 1 ! -name ee-secret ! -name testnet \
+        ! -name ephemery-iteration -exec rm -rf {} +
+    fi
+  fi
+  echo "${__iteration}" > /var/lib/nethermind/ephemery-iteration
+elif [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "Custom testnet at ${NETWORK}"
   repo=$(awk -F'/tree/' '{print $1}' <<< "${NETWORK}")
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
   if [[ ! -d "/var/lib/nethermind/testnet/${config_dir}" ]]; then
-    # For want of something more amazing, let's just fail if git fails to pull this
-    set -e
     mkdir -p /var/lib/nethermind/testnet
     cd /var/lib/nethermind/testnet
     git init --initial-branch="${branch}"
@@ -65,10 +89,27 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     git config core.sparseCheckout true
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
-    set +e
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/nethermind/testnet/${config_dir}/enodes.yaml" | paste -sd ",")"
-  __network="--config none.cfg --Init.ChainSpecPath=/var/lib/nethermind/testnet/${config_dir}/chainspec.json --Discovery.Bootnodes=${bootnodes} --Init.IsMining=false"
+  config_dir_path="/var/lib/nethermind/testnet/${config_dir}"
+  __chainspec="${config_dir_path}/chainspec.json"
+fi
+if [[ -n "${config_dir_path}" ]]; then
+  if [[ -f "${config_dir_path}/enodes.txt" ]]; then
+    bootnodes="$(paste -sd, "${config_dir_path}/enodes.txt")"
+  else
+    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/enodes.yaml")"
+  fi
+  if [[ -f "${config_dir_path}/bootstrap_nodes.txt" ]]; then
+    v5_bootnodes="$(paste -sd, "${config_dir_path}/bootstrap_nodes.txt")"
+  else
+    v5_bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/bootstrap_nodes.yaml")"
+  fi
+  if [[ -n "${bootnodes}" && -n "${v5_bootnodes}" ]]; then
+    bootnodes+=",${v5_bootnodes}"
+  elif [[ -n "${v5_bootnodes}" ]]; then
+    bootnodes="${v5_bootnodes}"
+  fi
+  __network="--config none.cfg --Init.ChainSpecPath=${__chainspec} --Discovery.Bootnodes=${bootnodes}"
   if [[ ! "${NODE_TYPE}" = "archive" ]]; then
     __prune="--Pruning.Mode=None"
   fi
@@ -76,15 +117,35 @@ else
   __network="--config ${NETWORK}"
 fi
 
-if [[ ! "${NETWORK}" =~ ^https?:// && ! "${NODE_TYPE}" = "archive" ]]; then  # Only configure prune parameters for named networks
+# Replace this logic when Patricia is gone entirely. At that point detect Patricia and warn, or just let NM fail
+# Determine the state DB layout. Flat is the Nethermind 2.0 default for a fresh DB; an existing
+# DB keeps the layout it was created with. A fresh sync that opts out of flat counts as Patricia.
+__patricia=0
+if [[ ! -f /var/lib/nethermind/flatdb ]]; then
+  if [[ -d /var/lib/nethermind/nethermind_db || -d /var/lib/nethermind-og/nethermind_db ]]; then
+    if [[ -z "$(find /var/lib/nethermind/nethermind_db /var/lib/nethermind-og/nethermind_db \
+                -mindepth 3 -maxdepth 3 -path '*/flat/*' -name '*.sst' -print -quit 2>/dev/null)" ]]; then
+      __patricia=1
+    else
+      touch /var/lib/nethermind/flatdb  # Pre-existing flat DB, might not have a marker file yet
+    fi
+  elif [[ "${EL_EXTRAS,,}" =~ (flatdb\.enabled|flatdb-enabled)[[:space:]=]+false ]]; then  # Fresh sync, opts out of flat
+    __patricia=1
+  else
+    touch /var/lib/nethermind/flatdb  # Fresh sync, default to flat
+  fi
+fi
+
+# Only configure prune parameters for named networks, non-archive and Patricia DB
+if [[ -z "${config_dir_path}" && "${NODE_TYPE}" != "archive" && "${__patricia}" -eq 1 ]]; then
   memtotal=$(awk '/MemTotal/ {printf "%d", int($2/1024/1024)}' /proc/meminfo)
   parallel=$(($(nproc)/4))
   if [[ "${parallel}" -lt 2 ]]; then
     parallel=2
   fi
-  __prune="--Pruning.FullPruningMaxDegreeOfParallelism=${parallel}"
+  __prune="--Pruning.FullPruningMaxDegreeOfParallelism=${parallel} --Pruning.FullPruningCompletionBehavior=AlwaysShutdown --JsonRpc.AdditionalRpcUrls=http://127.0.0.1:1337|http|admin"
   if [[ "${AUTOPRUNE_NM}" = true ]]; then
-    __prune="${__prune} --Pruning.FullPruningTrigger=VolumeFreeSpace"
+    __prune+=" --Pruning.FullPruningTrigger=VolumeFreeSpace"
     if [[ "${NETWORK}" =~ (mainnet|gnosis) ]]; then
       __prune+=" --Pruning.FullPruningThresholdMb=375810"
     else
@@ -98,47 +159,95 @@ fi
 
 case "${NODE_TYPE}" in
   archive)
-    echo "Nethermind archive node without pruning"
-    __prune="--Sync.DownloadBodiesInFastSync=false --Sync.DownloadReceiptsInFastSync=false --Sync.FastSync=false --Sync.SnapSync=false --Sync.FastBlocks=false --Pruning.Mode=None --Sync.PivotNumber=0"
+    # Nethermind's own "<network>_archive" config is this set plus the FlatDb keys below.
+    __prune="--Sync.DownloadBodiesInFastSync=false --Sync.DownloadReceiptsInFastSync=false --Sync.FastSync=false --Sync.SnapSync=false --Sync.FastBlocks=false --Pruning.Mode=None --Sync.PivotNumber=0 --Receipt.TxLookupLimit=0"
+    if [[ "${__patricia}" -eq 0 ]]; then
+      echo "Nethermind FlatDB archive node without pruning"
+      __prune+=" --FlatDb.HistoryEnabled=true --FlatDb.PersistenceWriteBufferFloor=67108864"
+    else
+      echo "Nethermind legacy archive node without pruning"
+      echo "Consider a FlatDB archive node instead"
+    fi
+    __ere_from=0
     ;;
   full)
     echo "Nethermind full node without history expiry"
     __prune+=" --Sync.AncientBodiesBarrier=0 --Sync.AncientReceiptsBarrier=0"
+    __ere_from=0
     ;;
   pre-merge-expiry)
     case "${NETWORK}" in
       mainnet)
         echo "Nethermind minimal node with pre-merge history expiry"
         __prune+=" --Sync.AncientBodiesBarrier=15537394 --Sync.AncientReceiptsBarrier=15537394 --History.Pruning=UseAncientBarriers"
+        __ere_from=15537394
         ;;
       sepolia)
         echo "Nethermind minimal node with pre-merge history expiry"
         __prune+=" --Sync.AncientBodiesBarrier=1450408 --Sync.AncientReceiptsBarrier=1450408 --History.Pruning=UseAncientBarriers"
+        __ere_from=1450408
         ;;
       *)
         echo "There is no pre-merge history for ${NETWORK} network, \"pre-merge-expiry\" has no effect."
+        __ere_from=0
         ;;
     esac
     ;;
-  pre-cancun-expiry)
+  pre-prague-expiry)
     case "${NETWORK}" in
       mainnet)
-        echo "Nethermind minimal node with pre-Cancun history expiry"
-        __prune+=" --Sync.AncientBodiesBarrier=19426587 --Sync.AncientReceiptsBarrier=19426587 --History.Pruning=UseAncientBarriers"
+        echo "Nethermind minimal node with pre-Prague history expiry"
+        __prune+=" --Sync.AncientBodiesBarrier=22431084 --Sync.AncientReceiptsBarrier=22431084 --History.Pruning=UseAncientBarriers"
+        __ere_from=22431084
         ;;
       sepolia)
-        echo "Nethermind minimal node with pre-Cancun history expiry"
-        __prune+=" --Sync.AncientBodiesBarrier=5187023 --Sync.AncientReceiptsBarrier=5187023 --History.Pruning=UseAncientBarriers"
+        echo "Nethermind minimal node with pre-Prague history expiry"
+        __prune+=" --Sync.AncientBodiesBarrier=7836331 --Sync.AncientReceiptsBarrier=7836331 --History.Pruning=UseAncientBarriers"
+        __ere_from=7836331
+        ;;
+      hoodi)
+        echo "Nethermind minimal node with pre-Prague history expiry"
+        __prune+=" --Sync.AncientBodiesBarrier=60412 --Sync.AncientReceiptsBarrier=60412 --History.Pruning=UseAncientBarriers"
+        __ere_from=60412
         ;;
       *)
-        echo "There is no pre-Cancun history for ${NETWORK} network, \"pre-cancun-expiry\" has no effect."
+        echo "There is no pre-Prague history for ${NETWORK} network, \"pre-prague-expiry\" has no effect."
+        __ere_from=0
+        ;;
+    esac
+    ;;
+  stakewise-expiry)
+    case "${NETWORK}" in
+      mainnet)
+        echo "Nethermind minimal node with Stakewise history expiry"
+        __prune+=" --Sync.AncientBodiesBarrier=25900000 --Sync.AncientReceiptsBarrier=25900000 --History.Pruning=UseAncientBarriers"
+        __ere_from=25900000
+        ;;
+      hoodi)
+        echo "Nethermind minimal node with Stakewise history expiry"
+        __prune+=" --Sync.AncientBodiesBarrier=3580000 --Sync.AncientReceiptsBarrier=3580000 --History.Pruning=UseAncientBarriers"
+        __ere_from=3580000
+        ;;
+      *)
+        echo "There is no Stakewise expiry config for ${NETWORK} network, \"stakewise-expiry\" has no effect."
+        __ere_from=0
         ;;
     esac
     ;;
   rolling-expiry)
-    echo "Nethermind minimal node with rolling history expiry, keeps 1 year by default."
-    echo "\"EL_EXTRAS=--history-retentionepochs <epochs>\" in \".env\" can override, minimum <epochs> are 82125."
-    __prune+=" --History.Pruning=Rolling"
+    echo "Nethermind minimal node with rolling history expiry, keeps ~5 months"
+    __prune+=" --History.Pruning=Rolling --History.RetentionEpochs=33024"
+    ;;
+  custom)
+    echo "Nethermind default block retention; adjust as desired by \"EL_EXTRAS\" in \".env\""
+    __prune=""
+    __ere_from=0
+    ;;
+  use-cl-zkproofs)
+    echo "ERROR: The node type ${NODE_TYPE} is designed to not run an execution layer client"
+    echo "Remove \"nethermind.yml\" from configuration, or change the node type"
+    sleep 30
+    exit 1
     ;;
   *)
     echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Nethermind implementation."
@@ -147,9 +256,6 @@ case "${NODE_TYPE}" in
     ;;
 esac
 
-echo "Using pruning parameters:"
-echo "${__prune}"
-
 # New or old datadir
 if [[ -d /var/lib/nethermind-og/nethermind_db ]]; then
   __datadir="--data-dir /var/lib/nethermind-og"
@@ -157,20 +263,38 @@ else
   __datadir="--data-dir /var/lib/nethermind"
 fi
 
+# EraE import
+__ere=""
+if [[ -n "${ERE_URL}" && -z "${config_dir_path}" ]]; then  # Named network
+  if [[ "${NODE_TYPE}" = "rolling-expiry" ]]; then
+    echo "Nethermind is configured for ${NODE_TYPE}, skipping EraE import."
+  else
+    __ere="--erae-importdirectory /var/lib/nethermind/ere --erae-remotebaseurl ${ERE_URL} --erae-from ${__ere_from}"
+    __prune=${__prune//--History.Pruning=UseAncientBarriers/}  # Not compatible with EraE import
+  fi
+fi
+
+echo "Using pruning parameters:"
+echo "${__prune}"
+if [[ -n "${__ere}" ]]; then
+  echo "Using EraE import parameters:"
+  echo "${__ere}"
+fi
+
 if [[ "${COMPOSE_FILE}" =~ grandine-plugin(-allin1)?\.yml ]]; then
   if [[ ! -f /var/lib/grandine/wallet-password.txt ]]; then
     echo "Creating password for Grandine key wallet"
     head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > /var/lib/grandine/wallet-password.txt
   fi
-  __grandine="--grandine-disableupnp --grandine-datadir /var/lib/grandine --grandine-httpaddress 0.0.0.0 --grandine-httpport ${CL_REST_PORT:-5052}"
-  __grandine+=" --grandine-httpallowedorigins=* --grandine-listenaddress 0.0.0.0 --grandine-libp2pport ${CL_P2P_PORT:-9000} --grandine-discoveryport ${CL_P2P_PORT:-9000}"
-  __grandine+=" --grandine-quicport ${CL_QUIC_PORT:-9001} ${CL_MAX_PEER_COUNT:+--grandine-targetpeers} ${CL_MAX_PEER_COUNT:+${CL_MAX_PEER_COUNT}}"
-  __grandine+=" --grandine-metrics --grandine-metricsaddress 0.0.0.0 --grandine-metricsport 8008 --grandine-suggestedfeerecipient ${FEE_RECIPIENT}"
-  __grandine+=" --grandine-trackliveness"
+  __grandine="--grandine-disable-upnp --grandine-data-dir /var/lib/grandine --grandine-http-address 0.0.0.0 --grandine-http-port ${CL_REST_PORT:-5052}"
+  __grandine+=" --grandine-http-allowed-origins=* --grandine-listen-address 0.0.0.0 --grandine-libp2p-port ${CL_P2P_PORT:-9000} --grandine-discovery-port ${CL_P2P_PORT:-9000}"
+  __grandine+=" --grandine-quic-port ${CL_QUIC_PORT:-9001} ${CL_MAX_PEER_COUNT:+--grandine-target-peers} ${CL_MAX_PEER_COUNT:+${CL_MAX_PEER_COUNT}}"
+  __grandine+=" --grandine-metrics --grandine-metrics-address 0.0.0.0 --grandine-metrics-port 8008 --grandine-suggested-fee-recipient ${FEE_RECIPIENT}"
+  __grandine+=" --grandine-track-liveness"
 
   if [[ "${EMBEDDED_VC}" = "true" ]]; then
-    __grandine+=" --grandine-keystorestoragepasswordfile /var/lib/grandine/wallet-password.txt  --grandine-enablevalidatorapi"
-    __grandine+=" --grandine-validatorapiaddress 0.0.0.0 --grandine-validatorapiport ${KEY_API_PORT:-7500} --grandine-validatorapiallowedorigins=*"
+    __grandine+=" --grandine-keystore-storage-password-file /var/lib/grandine/wallet-password.txt  --grandine-enable-validator-api"
+    __grandine+=" --grandine-validator-api-address 0.0.0.0 --grandine-validator-api-port ${KEY_API_PORT:-7500} --grandine-validator-api-allowed-origins=*"
   fi
 
   if [[ "${NETWORK}" =~ ^https?:// ]]; then
@@ -179,8 +303,6 @@ if [[ "${COMPOSE_FILE}" =~ grandine-plugin(-allin1)?\.yml ]]; then
     branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
     config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
     echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-    # For want of something more amazing, let's just fail if git fails to pull this
-    set -e
     if [[ ! -d "/var/lib/grandine/testnet/${config_dir}" ]]; then
       mkdir -p /var/lib/grandine/testnet
       cd /var/lib/grandine/testnet
@@ -190,25 +312,24 @@ if [[ "${COMPOSE_FILE}" =~ grandine-plugin(-allin1)?\.yml ]]; then
       echo "${config_dir}" > .git/info/sparse-checkout
       git pull origin "${branch}"
     fi
-    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/grandine/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
-    set +e
-    __grandine+=" --grandine-configurationdirectory=/var/lib/grandine/testnet/${config_dir} --grandine-bootnodes=${bootnodes}"
+    config_dir_path="/var/lib/grandine/testnet/${config_dir}"
+    __grandine+=" --grandine-configuration-directory=${config_dir_path} --grandine-network=custom"
   else
     __grandine+=" --grandine-network=${NETWORK}"
   fi
 
   case "${CL_NODE_TYPE}" in
     archive)
-      echo "Grandine archive node without pruning"
-      __grandine+=" --grandine-backsync --grandine-archivestorage"
+      echo "Grandine archive node without history pruning"
+      __grandine+=" --grandine-back-sync --grandine-archive-storage"
       ;;
     pruned)
       ;;
     aggressive-pruned)
-      __grandine+=" --grandine-prunestorage"
+      __grandine+=" --grandine-prune-storage"
       ;;
     full)
-      __grandine+=" --grandine-backsync"
+      __grandine+=" --grandine-back-sync"
       ;;
     *)
       echo "ERROR: The node type ${CL_NODE_TYPE} is not known to Eth Docker's Grandine implementation."
@@ -219,84 +340,160 @@ if [[ "${COMPOSE_FILE}" =~ grandine-plugin(-allin1)?\.yml ]]; then
 
 # Check whether we should rapid sync
   if [[ -n "${CHECKPOINT_SYNC_URL}" ]]; then
-    __grandine+=" --grandine-checkpointsyncurl=${CHECKPOINT_SYNC_URL}"
+    __grandine+=" --grandine-checkpoint-sync-url=${CHECKPOINT_SYNC_URL}"
     echo "Grandine checkpoint sync enabled"
   fi
 
 # Check whether we should send stats to beaconcha.in
   if [[ -n "${BEACON_STATS_API}" ]]; then
-    __grandine+=" --grandine-remotemetricsurl https://beaconcha.in/api/v1/client/metrics?apikey=${BEACON_STATS_API}&machine=${BEACON_STATS_MACHINE}"
+    __grandine+=" --grandine-remote-metrics-url https://beaconcha.in/api/v1/client/metrics?apikey=${BEACON_STATS_API}&machine=${BEACON_STATS_MACHINE}"
     echo "Grandine beacon stats API enabled"
   fi
 
+# Adjust RIGHT after each network's Glamsterdam hardfork
+# MEV Boost implies ePBS builders only on networks that haven't forked yet
+  if [[ "${MEV_BOOST}" = "true" && "${NETWORK}" =~ ^(hoodi|mainnet)$ ]]; then
+    __mev_active=1
+  else
+    if [[ "${MEV_BOOST}" = "true" ]]; then
+      echo "MEV_BOOST is true, but MEV Boost is not used on ${NETWORK}. Ignoring it."
+    fi
+    __mev_active=0
+  fi
+
 # Check whether we should use MEV Boost
-  if [[ "${MEV_BOOST}" = "true" ]]; then
-    __mev_boost=" --grandine-builderurl ${MEV_NODE:-http://mev-boost:18550}"
+  if [[ "${__mev_active}" -eq 1 ]]; then
+    __mev_boost=" --grandine-builder-url ${MEV_NODE:-http://mev-boost:18550}"
     echo "Grandine MEV Boost enabled"
-    if [[ "${EMBEDDED_VC}" = "true" ]]; then
-      build_factor="$(__normalize_int "${MEV_BUILD_FACTOR}")"
+  else
+    __mev_boost=""
+  fi
+
+# Check whether we should use ePBS
+  if [[ "${EMBEDDED_VC}" = "true" ]]; then
+    if [[ "${__mev_active}" -eq 1 || "${EPBS_BUILDERS}" = "true" ]]; then
+      if [[ "${__mev_active}" -eq 1 ]]; then
+        if [[ "${EPBS_BUILDERS}" = "false" ]]; then
+          echo "ePBS builders are meant to be disabled, but MEV Boost is true, which will enable them anyway."
+          echo "Update Eth Docker again after ${NETWORK}'s Glamsterdam hard fork to fix this."
+        else
+          echo "Update Eth Docker again after mainnet Glamsterdam hard fork, expected December 2026, to remove MEV Boost."
+        fi
+      fi
+      if [[ "${EPBS_BUILDERS}" = "true" ]]; then
+        echo "ePBS builders enabled"
+      fi
+
+      build_factor="$(__normalize_int "${EPBS_BUILD_FACTOR}")"
+      if [[ "${build_factor}" = "maxprofit" ]]; then
+        build_factor=100  # 100 means profit maximization, as in the keymanager API
+      fi
       case "${build_factor}" in
-        0)
-          __mev_boost=""
-          __mev_factor=""
-          echo "Disabled MEV Boost because MEV_BUILD_FACTOR is 0."
-          echo "WARNING: This conflicts with MEV_BOOST true. Set factor in a range of 1 to 100"
+        0|local)
+          if [[ "${__mev_active}" -eq 1 ]]; then
+            __mev_boost=""
+            __mev_factor=""
+            echo "Disabled MEV Boost because EPBS_BUILD_FACTOR is ${build_factor}."
+            echo "WARNING: This conflicts with MEV_BOOST true. Set a factor above 0, or maxprofit or always"
+          else
+            __mev_factor=" --grandine-default-builder-boost-factor 0"
+            echo "Build blocks locally, use ePBS builders as fallback. EPBS_BUILD_FACTOR is ${build_factor}."
+          fi
           ;;
-        [1-9]|[1-9][0-9])
-          __mev_factor=" --grandine-defaultbuilderboostfactor ${build_factor}"
-          echo "Enabled MEV Build Factor of ${build_factor}"
-          ;;
-        100)
-          __mev_factor=" --grandine-defaultbuilderboostfactor 18446744073709551615"
-          echo "Always prefer MEV builder blocks, MEV_BUILD_FACTOR 100"
+        always)
+          __mev_factor=" --grandine-default-builder-boost-factor 18446744073709551615"
+          echo "Always prefer ePBS builder blocks, EPBS_BUILD_FACTOR always"
           ;;
         "")
           __mev_factor=""
-          echo "Use default --grandine-defaultbuilderboostfactor"
+          echo "Use default --grandine-default-builder-boost-factor"
           ;;
         *)
-          __mev_factor=""
-          echo "WARNING: MEV_BUILD_FACTOR has an invalid value of \"${build_factor}\""
+          if [[ "${build_factor}" =~ ^[1-9][0-9]{0,19}$ ]]; then
+            # Compare as text, bash arithmetic cannot hold uint64. Equal length makes this a numeric comparison
+            # shellcheck disable=SC2071
+            if [[ ${#build_factor} -eq 20 && "${build_factor}" > "18446744073709551615" ]]; then
+              echo "EPBS_BUILD_FACTOR ${build_factor} exceeds the 64-bit maximum, capping it to 18446744073709551615"
+              build_factor=18446744073709551615
+            fi
+            __mev_factor=" --grandine-default-builder-boost-factor ${build_factor}"
+            echo "Enabled ePBS Build Factor of ${build_factor}"
+          else
+            __mev_factor=""
+            echo "WARNING: EPBS_BUILD_FACTOR has an invalid value of \"${build_factor}\""
+          fi
           ;;
       esac
-      __mev_boost+="${__mev_factor}"
+      # Adjust once Grandine supports ePBS CLI parameters, to pass them here like Prysm does
+      # Compose keeps the newlines of a multi-line EPBS_BUILDER_URLS
+      builder_urls="${EPBS_BUILDER_URLS//[[:space:]]/}"
+      if [[ -n "${builder_urls}" || -n "${EPBS_MIN_BID}" ]]; then
+        echo "Grandine does not support ePBS CLI parameters for builder URLs or minimum bid yet. Ignoring EPBS_BUILDER_URLS and EPBS_MIN_BID."
+        echo "Use \"./ethd keys set-builder\" to configure ePBS builders."
+      fi
+    else
+      __mev_factor=" --grandine-default-builder-boost-factor 0"
+      echo "Build blocks locally, use ePBS builders as fallback"
     fi
-    __grandine+="${__mev_boost}"
+  else
+    __mev_factor=""
   fi
+  __grandine+="${__mev_boost}${__mev_factor}"
 
   if [[ "${IPV6}" = "true" ]]; then
     echo "Configuring Grandine to listen on IPv6 ports"
-    __grandine+=" --grandine-listenaddressipv6 :: --grandine-libp2pportipv6 ${CL_P2P_PORT:-9000} --grandine-discoveryportipv6 ${CL_P2P_PORT:-9000} \
-  --grandine-quicportipv6 ${CL_QUIC_PORT:-9001}"
+    __grandine+=" --grandine-listen-address-ipv6 :: --grandine-libp2p-port-ipv6 ${CL_P2P_PORT:-9000} --grandine-discovery-port-ipv6 ${CL_P2P_PORT:-9000} \
+  --grandine-quic-port-ipv6 ${CL_QUIC_PORT:-9001}"
   fi
 
 # Check whether we should enable doppelganger protection
   if [[ "${EMBEDDED_VC}" = "true" && "${DOPPELGANGER}" = "true" ]]; then
-    __grandine+=" --grandine-detectdoppelgangers"
+    __grandine+=" --grandine-detect-doppelgangers"
     echo "Grandine Doppelganger protection enabled"
   fi
 
 # Web3signer URL
   if [[ "${EMBEDDED_VC}" = "true" && "${WEB3SIGNER}" = "true" ]]; then
-    __grandine+=" --grandine-web3signerurls ${W3S_NODE}"
+    __grandine+=" --grandine-web3signer-urls ${W3S_NODE}"
+    while true; do
+      if curl -s -m 5 "${W3S_NODE}" &> /dev/null; then
+          echo "web3signer is up, starting Grandine"
+          break
+      else
+          echo "Waiting for web3signer to be reachable..."
+          sleep 5
+      fi
+    done
   fi
 
-  if [[ ! "${DEFAULT_GRAFFITI}" = "true" ]]; then
-      __grandine+=" --grandine-graffiti ${GRAFFITI}"
+  if [[ "${EMBEDDED_VC}" = "true" && "${DEFAULT_GRAFFITI}" != "true" ]]; then
+    __grandine_graffiti_args=(--grandine-graffiti "${GRAFFITI}")
   fi
 
 # Traces
   if [[ "${COMPOSE_FILE}" =~ (grafana\.yml|grafana-rootless\.yml) ]]; then
-    __grandine+=" --grandine-telemetrymetricsurl http://tempo:4317 --grandine-telemetryservicename grandine --grandine-telemetrylevel ${LOG_LEVEL:-info}"
+    __grandine+=" --grandine-telemetry-metrics-url http://tempo:4317 --grandine-telemetry-service-name grandine --grandine-telemetry-level ${LOG_LEVEL:-info}"
   # These may become default in future. Here so Grandine doesn't murder itself in the meantime
     export OTEL_TRACES_SAMPLER=parentbased_traceidratio
     export OTEL_TRACES_SAMPLER_ARG=0.01
     export OTEL_EXPORTER_OTLP_INSECURE=true
+  export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
   fi
 
   __grandine+=" ${CL_EXTRAS} ${VC_EXTRAS}"
+  echo "Grandine plugin will be launched with these parameters: ${__grandine}" "${__grandine_graffiti_args[@]}"
 else
   __grandine=""
+  __grandine_graffiti_args=()
+fi
+
+# Remove when Nethermind drops Patricia support
+# Set by "ethd migrate-nethermind". Nethermind exits when the import is done, and restarts on FlatDB
+__migrate=""
+if [[ -f /var/lib/nethermind/migrate-flatdb ]]; then
+  rm -f /var/lib/nethermind/migrate-flatdb  # Remove first, so a failed migration doesn't loop
+  echo "Migrating Nethermind database to FlatDB. Nethermind will stop when done, and restart on FlatDB."
+  __migrate="--FlatDb.ImportFromPruningTrieState=true --FlatDb.DropPruningTrieState=true"
 fi
 
 __strip_empty_args "$@"
@@ -304,4 +501,4 @@ set -- "${__args[@]}"
 
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-exec "$@" ${__datadir} ${__network} ${__prune} ${__grandine} ${EL_EXTRAS}
+exec "$@" ${__datadir} ${__network} ${__prune} ${__ere} ${__grandine} "${__grandine_graffiti_args[@]}" ${__migrate} ${EL_EXTRAS}

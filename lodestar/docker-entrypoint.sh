@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
+set -Eeuo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
   chown -R lsconsensus:lsconsensus /var/lib/lodestar
   exec gosu lsconsensus docker-entrypoint.sh "$@"
+fi
+
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
 fi
 
 
@@ -42,8 +48,6 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For lack of something more sophisticated, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/lodestar/consensus/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/lodestar/consensus/testnet
     cd /var/lib/lodestar/consensus/testnet
@@ -53,19 +57,26 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/lodestar/consensus/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
-  set +e
-  __network="--paramsFile=/var/lib/lodestar/consensus/testnet/${config_dir}/config.yaml --genesisStateFile=/var/lib/lodestar/consensus/testnet/${config_dir}/genesis.ssz \
---bootnodes=${bootnodes} --network.connectToDiscv5Bootnodes --rest.namespace=*"
+  config_dir_path="/var/lib/lodestar/consensus/testnet/${config_dir}"
+  if [[ -f "${config_dir_path}/bootstrap_nodes.txt" ]]; then
+    bootnodes="$(paste -sd, "${config_dir_path}/bootstrap_nodes.txt")"
+  else
+    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/bootstrap_nodes.yaml")"
+  fi
+  __network="--paramsFile=${config_dir_path}/config.yaml --genesisStateFile=${config_dir_path}/genesis.ssz --bootnodes=${bootnodes} --network.connectToDiscv5Bootnodes --rest.namespace=*"
 else
   __network="--network ${NETWORK}"
 fi
 
 # Check whether we should use MEV Boost
-if [[ "${MEV_BOOST}" = "true" ]]; then
+# Adjust RIGHT after each network's Glamsterdam hardfork
+if [[ "${MEV_BOOST}" = "true" && "${NETWORK}" =~ ^(hoodi|mainnet)$ ]]; then
   __mev_boost="--builder --builder.url=${MEV_NODE:-http://mev-boost:18550}"
   echo "MEV Boost enabled"
 else
+  if [[ "${MEV_BOOST}" = "true" ]]; then
+    echo "MEV_BOOST is true, but MEV Boost is not used on ${NETWORK}. Ignoring it."
+  fi
   __mev_boost=""
 fi
 
@@ -79,7 +90,11 @@ fi
 
 case "${NODE_TYPE}" in
   archive)
-    echo "Lodestar archive node without pruning"
+    echo "Lodestar archive node without history pruning"
+    __prune="--serveHistoricalState"
+    ;;
+  blob-archive)
+    echo "Lodestar archive node without blob or history pruning"
     __prune="--chain.archiveBlobEpochs Infinity --serveHistoricalState"
     ;;
   full)
@@ -98,7 +113,7 @@ esac
 
 # Check whether we should rapid sync
 if [[ -n "${CHECKPOINT_SYNC_URL}" ]]; then
-  if [[ ! "${NODE_TYPE}" = "archive" ]]; then
+  if [[ ! "${NODE_TYPE}" =~ archive$ ]]; then
     __checkpoint_sync="--checkpointSyncUrl=${CHECKPOINT_SYNC_URL}"
     echo "Checkpoint sync enabled"
   else
@@ -111,21 +126,31 @@ fi
 
 if [[ "${IPV6}" = "true" ]]; then
   echo "Configuring Lodestar to listen on IPv6 ports"
-  __ipv6="--listenAddress 0.0.0.0 --listenAddress6 :: --port6 ${CL_P2P_PORT:-9000}"
-# ENR discovery on v6 is not yet working, likely too few peers. Manual for now
-  ipv6_pattern="^[0-9A-Fa-f]{1,4}:" # Sufficient to check the start
-  set +e
-  public_v6=$(curl -s -6 https://ifconfig.me)
-  set -e
-  if [[ "${public_v6}" =~ ${ipv6_pattern} ]]; then
-    __ipv6+=" --enr.ip6 ${public_v6}"
-  fi
+  echo "IPv6 ENR will be auto-discovered. Please make sure the v6 P2P ports are reachable \"from Internet\""
+  __ipv6="--listenAddress 0.0.0.0 --listenAddress6 :: --port6 ${CL_P2P_PORT:-9000} --quicPort6 ${CL_QUIC_PORT:-9001}"
 else
   __ipv6="--listenAddress 0.0.0.0"
 fi
 
 __strip_empty_args "$@"
 set -- "${__args[@]}"
+
+i=0
+while true; do
+  if [ -f /var/lib/lodestar/consensus/ee-secret/jwtsecret ]; then
+    break
+  else
+    if [[ "$i" -eq 5 ]]; then
+      echo "Did not see the JWT secret file six times in a row. This is either a bug or a very slow execution layer client startup."
+      echo "Starting consensus layer client anyway: It may fail."
+      break
+    else
+      echo "Waiting for JWT secret file to be created by execution layer client"
+      sleep 5
+      ((++i))
+    fi
+  fi
+done
 
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086

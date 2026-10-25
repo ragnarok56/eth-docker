@@ -13,7 +13,10 @@ services:
       - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
-      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}
+      - EPBS_BUILDERS=${EPBS_BUILDERS}
+      - EPBS_BUILDER_URLS=${EPBS_BUILDER_URLS}
+      - EPBS_BUILD_FACTOR=${EPBS_BUILD_FACTOR}
+      - EPBS_MIN_BID=${EPBS_MIN_BID}
       - MEV_NODE=${MEV_NODE}
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
@@ -35,7 +38,7 @@ services:
 # No metrics scrape at present via labels.
 # Create an extra scrape target for execution:8008 in prometheus/conf.d
 
-  wipe-db:
+  wipe-cl-db:
     profiles: ["tools"]
     restart: "no"
     image: alpine:3
@@ -71,8 +74,6 @@ services:
       - WEB3SIGNER=${WEB3SIGNER:-false}
       - W3S_NODE=${W3S_NODE}
       - CL_NODE=${CL_NODE}
-    depends_on:
-      - execution
     entrypoint:
       - keymanager.sh
       - /var/lib/grandine/${NETWORK}/validator/api-token.txt

@@ -5,11 +5,47 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exec su-exec user docker-entrypoint-vc.sh "$@"
 fi
 
+if [[ "${NETWORK}" = "ephemery" ]]; then
+  config_dir_path="$(ephemery-config.sh /var/lib/nimbus/testnet/ephemery)"
+  # A new iteration has a new genesis, and slashing protection for the old one is for a dead chain
+  __iteration="$(basename "$(dirname "${config_dir_path}")")"
+  if [[ -f /var/lib/nimbus/ephemery-iteration ]]; then
+    __old_iteration="$(cat /var/lib/nimbus/ephemery-iteration)"
+    if [[ ! "${__old_iteration}" = "${__iteration}" ]]; then
+      echo "Ephemery reset from ${__old_iteration} to ${__iteration}, removing the old slashing protection DB"
+      rm -f /var/lib/nimbus/validators/slashing_protection.sqlite3*
+    fi
+  fi
+  echo "${__iteration}" > /var/lib/nimbus/ephemery-iteration
+fi
+
 
 __normalize_int() {
   local v=$1
-  if [[ "${v}" =~ ^[0-9]+$ ]]; then
-    v=$((10#${v}))
+  # Strip leading zeros as text. Arithmetic would overflow on the largest boost factors
+  if [[ "${v}" =~ ^0*([0-9]+)$ ]]; then
+    v="${BASH_REMATCH[1]}"
+  fi
+  printf '%s' "${v}"
+}
+
+__normalize_float() {
+  local v=$1
+  local int_part
+  local frac_part
+
+  if [[ "${v}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    int_part="${v%%.*}"
+    frac_part=""
+    if [[ "${v}" == *.* ]]; then
+      frac_part="${v#*.}"
+    fi
+    [[ "${int_part}" =~ ^0*([0-9]+)$ ]] && int_part="${BASH_REMATCH[1]}"
+    if [[ -n "${frac_part}" ]]; then
+      v="${int_part}.${frac_part}"
+    else
+      v="${int_part}"
+    fi
   fi
   printf '%s' "${v}"
 }
@@ -28,37 +64,94 @@ else
   __doppel="--doppelganger-detection=false"
 fi
 
+# Adjust RIGHT after each network's Glamsterdam hardfork
+# MEV Boost implies ePBS builders only on networks that haven't forked yet
+if [[ "${MEV_BOOST}" = "true" && "${NETWORK}" =~ ^(hoodi|mainnet)$ ]]; then
+  __mev_active=1
+else
+  __mev_active=0
+fi
+
 # Check whether we should use MEV Boost
-if [[ "${MEV_BOOST}" = "true" ]]; then
-  __mev_boost="--payload-builder=true"
+if [[ "${__mev_active}" -eq 1 ]]; then
+  __epbs="--payload-builder=true"
   echo "MEV Boost enabled"
-  build_factor="$(__normalize_int "${MEV_BUILD_FACTOR}")"
+else
+  __epbs=""
+fi
+
+# Check whether we should use ePBS
+if [[ "${__mev_active}" -eq 1 || "${EPBS_BUILDERS}" = "true" ]]; then
+  if [[ "${__mev_active}" -eq 1 ]]; then
+    if [[ "${EPBS_BUILDERS}" = "false" ]]; then
+      echo "ePBS builders are meant to be disabled, but MEV Boost is true, which will enable them anyway."
+      echo "Update Eth Docker again after ${NETWORK}'s Glamsterdam hard fork to fix this."
+    else
+      echo "Update Eth Docker again after mainnet Glamsterdam hard fork, expected December 2026, to remove MEV Boost."
+    fi
+  fi
+  if [[ "${EPBS_BUILDERS}" = "true" ]]; then
+    echo "ePBS builders enabled"
+  fi
+
+  build_factor="$(__normalize_int "${EPBS_BUILD_FACTOR}")"
+  if [[ "${build_factor}" = "maxprofit" ]]; then
+    build_factor=100  # 100 means profit maximization, as in the keymanager API
+  fi
   case "${build_factor}" in
-    0)
-      __mev_boost=""
-      __mev_factor=""
-      echo "Disabled MEV Boost because MEV_BUILD_FACTOR is 0."
-      echo "WARNING: This conflicts with MEV_BOOST true. Set factor in a range of 1 to 100"
+    0|local)
+      if [[ "${__mev_active}" -eq 1 ]]; then
+        __epbs=""
+        echo "Disabled MEV Boost because EPBS_BUILD_FACTOR is ${build_factor}."
+        echo "WARNING: This conflicts with MEV_BOOST true. Set a factor above 0, or maxprofit or always"
+      else
+        __epbs="--builder-boost-factor=0"
+        echo "Build blocks locally, use ePBS builders as fallback. EPBS_BUILD_FACTOR is ${build_factor}."
+      fi
       ;;
-    [1-9]|[1-9][0-9])
-      __mev_factor="--builder-boost-factor=${build_factor}"
-      echo "Enabled MEV Build Factor of ${build_factor}"
-      ;;
-    100)
-      __mev_factor="--builder-boost-factor=18446744073709551615"
-      echo "Always prefer MEV builder blocks, MEV_BUILD_FACTOR 100"
+    always)
+      __epbs+=" --builder-boost-factor=18446744073709551615"
+      echo "Always prefer ePBS builder blocks, EPBS_BUILD_FACTOR always"
       ;;
     "")
-      __mev_factor=""
+      echo "Use default --builder-boost-factor"
       ;;
     *)
-      __mev_factor=""
-      echo "WARNING: MEV_BUILD_FACTOR has an invalid value of \"${build_factor}\""
+      if [[ "${build_factor}" =~ ^[1-9][0-9]{0,19}$ ]]; then
+        # Compare as text, bash arithmetic cannot hold uint64. Equal length makes this a numeric comparison
+        # shellcheck disable=SC2071
+        if [[ ${#build_factor} -eq 20 && "${build_factor}" > "18446744073709551615" ]]; then
+          echo "EPBS_BUILD_FACTOR ${build_factor} exceeds the 64-bit maximum, capping it to 18446744073709551615"
+          build_factor=18446744073709551615
+        fi
+        __epbs+=" --builder-boost-factor=${build_factor}"
+        echo "Enabled ePBS Build Factor of ${build_factor}"
+      else
+        echo "WARNING: EPBS_BUILD_FACTOR has an invalid value of \"${build_factor}\""
+      fi
       ;;
   esac
+
+  if [[ -n "${EPBS_MIN_BID}" ]]; then
+    min_bid="$(__normalize_float "${EPBS_MIN_BID}")"
+    if [[ "${min_bid}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+      min_bid_gwei=$(awk -v v="${min_bid}" 'BEGIN{printf "%.0f", v * 1000000000}')
+      __epbs+=" --builder-min-bid=${min_bid_gwei}"
+    else
+      echo "WARNING: EPBS_MIN_BID has an invalid value of \"${EPBS_MIN_BID}\", ignoring"
+    fi
+  fi
+
+  if [[ -n "${EPBS_BUILDER_URLS}" ]]; then
+    builders=$(echo "${EPBS_BUILDER_URLS//[[:space:]]/}" | tr ',' ' ')
+    __builder_urls=()
+    for builder in ${builders}; do
+      __builder_urls+=("--payload-builder-url=${builder}")
+    done
+  fi
 else
-  __mev_boost=""
-  __mev_factor=""
+  __epbs="--builder-boost-factor=0"
+  echo "Build blocks locally, use ePBS builders as fallback"
 fi
 
 # accommodate comma separated list of consensus nodes
@@ -68,19 +161,22 @@ for node in ${nodes}; do
   __beacon_nodes+=("--beacon-node=${node}")
 done
 
-__log_level="--log-level=${LOG_LEVEL^^}"
-
 # Web3signer URL
 if [[ "${WEB3SIGNER}" = "true" ]]; then
   __w3s_url="--web3-signer-url=${W3S_NODE}"
+  __w3s_wait=300
+  __w3s_deadline=$(( SECONDS + __w3s_wait ))
   while true; do
-    if curl -s -m 5 "${W3S_NODE}" &> /dev/null; then
+    if curl -sf -m 5 "${W3S_NODE}/upcheck" &> /dev/null; then
       echo "Web3signer is up, starting Nimbus"
       break
-    else
-      echo "Waiting for Web3signer to be reachable..."
-      sleep 5
     fi
+    if (( SECONDS >= __w3s_deadline )); then
+      echo "Web3signer at ${W3S_NODE} is not reachable after ${__w3s_wait} seconds, starting Nimbus anyway"
+      break
+    fi
+    echo "Waiting for Web3signer to be reachable..."
+    sleep 5
   done
 else
   __w3s_url=""
@@ -94,11 +190,11 @@ else
 fi
 
 if [[ "${DEFAULT_GRAFFITI}" = "true" ]]; then
-# Word splitting is desired for the command line parameters
-# shellcheck disable=SC2086
-  exec "$@" "${__beacon_nodes[@]}" ${__w3s_url} ${__log_level} ${__doppel} ${__mev_boost} ${__mev_factor} ${__att_aggr} ${VC_EXTRAS}
+  __graffiti_args=()
 else
+  __graffiti_args=(--graffiti="${GRAFFITI}")
+fi
+
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" "${__beacon_nodes[@]}" ${__w3s_url} "--graffiti=${GRAFFITI}" ${__log_level} ${__doppel} ${__mev_boost} ${__mev_factor} ${__att_aggr} ${VC_EXTRAS}
-fi
+exec "$@" "${__beacon_nodes[@]}" ${__w3s_url} "${__graffiti_args[@]}" ${__doppel} ${__epbs} "${__builder_urls[@]}" ${__att_aggr} ${VC_EXTRAS}

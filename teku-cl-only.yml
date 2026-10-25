@@ -1,16 +1,16 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 x-build: &teku-build
   context: ./teku
   dockerfile: ${TEKU_DOCKERFILE}
   args:
-    - BUILD_TARGET=${TEKU_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+    - BUILD_TARGET=${TEKU_SRC_BUILD_TARGET:-$$(git describe --tags $$(git rev-list --tags --max-count=1))}
     - SRC_REPO=${TEKU_SRC_REPO:-https://github.com/ConsenSys/teku}
     - DOCKER_TAG=${TEKU_DOCKER_TAG:-latest}
     - DOCKER_REPO=${TEKU_DOCKER_REPO:-consensys/teku}
@@ -33,7 +33,7 @@ services:
       - CHECKPOINT_SYNC_URL=${CHECKPOINT_SYNC_URL}
       - JWT_SECRET=${JWT_SECRET}
       - MEV_BOOST=${MEV_BOOST}
-      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}
+      - EPBS_BUILD_FACTOR=${EPBS_BUILD_FACTOR}
       - MEV_NODE=${MEV_NODE}
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
@@ -47,12 +47,16 @@ services:
       - WEB3SIGNER=false
       - NETWORK=${NETWORK}
       - IPV6=${IPV6:-false}
-      - CL_IPV6_P2P_PORT=${CL_IPV6_P2P_PORT:-9090}
+      - HOST_IP=${HOST_IP:-}
+      - CL_IPV6_P2P_PORT=${CL_IPV6_P2P_PORT:-9010}
+      - CL_IPV6_QUIC_PORT=${CL_IPV6_QUIC_PORT:-9011}
     ports:
       - ${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/tcp
       - ${HOST_IP:-}:${CL_P2P_PORT:-9000}:${CL_P2P_PORT:-9000}/udp
-      - ${HOST_IP:-}:${CL_IPV6_P2P_PORT:-9090}:${CL_IPV6_P2P_PORT:-9090}/tcp
-      - ${HOST_IP:-}:${CL_IPV6_P2P_PORT:-9090}:${CL_IPV6_P2P_PORT:-9090}/udp
+      - ${HOST_IP:-}:${CL_QUIC_PORT:-9001}:${CL_QUIC_PORT:-9001}/udp
+      - ${HOST_IP:-}:${CL_IPV6_P2P_PORT:-9010}:${CL_IPV6_P2P_PORT:-9010}/tcp
+      - ${HOST_IP:-}:${CL_IPV6_P2P_PORT:-9010}:${CL_IPV6_P2P_PORT:-9010}/udp
+      - ${HOST_IP:-}:${CL_IPV6_QUIC_PORT:-9011}:${CL_IPV6_QUIC_PORT:-9011}/udp
     networks:
       default:
         aliases:
@@ -65,14 +69,14 @@ services:
       - /opt/teku/bin/teku
       - --data-path=/var/lib/teku
       - --log-destination=CONSOLE
+      - --logging=${LOG_LEVEL}
       - --ee-endpoint=${EL_NODE}
       - --ee-jwt-secret-file
       - /var/lib/teku/ee-secret/jwtsecret
-      - --eth1-deposit-contract-max-request-size=1000
       - --p2p-port=${CL_P2P_PORT:-9000}
+      - --p2p-quic-port=${CL_QUIC_PORT:-9001}
       - ${CL_MAX_PEER_COUNT:+--p2p-peer-upper-bound=${CL_MAX_PEER_COUNT}}
       - ${CL_MIN_PEER_COUNT:+--p2p-peer-lower-bound=${CL_MIN_PEER_COUNT}}
-      - --logging=${LOG_LEVEL}
       - --rest-api-host-allowlist=*
       - --rest-api-enabled=true
       - --rest-api-interface=0.0.0.0
@@ -89,6 +93,7 @@ services:
       - metrics.port=8008
       - metrics.instance=consensus
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
 volumes:
   tekuconsensus-data:

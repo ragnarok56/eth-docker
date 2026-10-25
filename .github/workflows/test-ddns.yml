@@ -1,0 +1,77 @@
+name: Test DDNS
+
+defaults:
+  run:
+    shell: bash
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-ddns:
+    if: contains(github.event.pull_request.labels.*.name, 'check-ddns')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: traefik-utils/app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: '3.15'
+          enable-cache: true
+          cache-dependency-glob: traefik-utils/app/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run tests and coverage
+        id: tests
+        run: |
+          set +e
+          uv run pytest --cov=. --cov-report=term-missing --cov-report=markdown:coverage.md
+          status=$?
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+          printf '%s\n' "${status}" > test-status
+          exit 0
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ddns-coverage
+          path: |
+            traefik-utils/app/coverage.md
+            traefik-utils/app/test-status
+          if-no-files-found: warn
+
+      - name: Report test result
+        if: always()
+        run: exit "${{ steps.tests.outputs.status }}"
+
+  build-ddns:
+    if: contains(github.event.pull_request.labels.*.name, 'check-ddns')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build -t ddns:ci traefik-utils
+
+      - name: Import modules in image
+        run: >-
+          docker run --rm ddns:ci python -c
+          "import updater, cf_provider, route53_provider, provider_registry"

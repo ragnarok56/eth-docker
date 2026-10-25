@@ -1,16 +1,18 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 x-build: &prysm-build
   context: ./prysm
+  additional_contexts:
+    ephemery: ./ephemery
   dockerfile: ${PRYSM_DOCKERFILE}
   args:
-    - BUILD_TARGET=${PRYSM_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+    - BUILD_TARGET=${PRYSM_SRC_BUILD_TARGET:-$$(git describe --tags $$(git rev-list --tags --max-count=1))}
     - SRC_REPO=${PRYSM_SRC_REPO:-https://github.com/offchainlabs/prysm}
     - DOCKER_TAG=${PRYSM_DOCKER_TAG:-stable}
     - DOCKER_VC_TAG=${PRYSM_DOCKER_VC_TAG:-stable}
@@ -48,6 +50,10 @@ services:
       - W3S_NODE=${W3S_NODE}
       - NETWORK=${NETWORK}
       - ENABLE_DIST_ATTESTATION_AGGR=${ENABLE_DIST_ATTESTATION_AGGR:-false}
+      - EPBS_BUILDERS=${EPBS_BUILDERS}
+      - EPBS_BUILDER_URLS=${EPBS_BUILDER_URLS}
+      - EPBS_BUILD_FACTOR=${EPBS_BUILD_FACTOR}
+      - EPBS_MIN_BID=${EPBS_MIN_BID}
     networks:
       default:
         aliases:
@@ -71,27 +77,22 @@ services:
       - 0.0.0.0
       - --monitoring-port
       - "8009"
-      - --web
       - --http-host
       - 0.0.0.0
       - --http-port
       - ${KEY_API_PORT:-7500}
-      - --http-cors-domain=*
+      - --rpc
       - --suggested-fee-recipient
       - ${FEE_RECIPIENT}
       - --wallet-password-file
       - /var/lib/prysm/password.txt
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.prysm.entrypoints=web,websecure
-      - traefik.http.routers.prysm.rule=Host(`${PRYSM_HOST}.${DOMAIN}`)
-      - traefik.http.routers.prysm.tls.certresolver=letsencrypt
-      - traefik.http.services.prysm.loadbalancer.server.port=${KEY_API_PORT:-7500}
       - metrics.scrape=true
       - metrics.path=/metrics
       - metrics.port=8009
       - metrics.instance=validator
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
   create-wallet:
     profiles: ["tools"]
@@ -110,6 +111,7 @@ services:
       - WEB3SIGNER=${WEB3SIGNER:-false}
     entrypoint: create-wallet.sh
 
+# Deprecate and remove after Hegotá
   validator-exit:
     profiles: ["tools"]
     restart: "no"
@@ -161,8 +163,6 @@ services:
     image: vc-utils:local
     pull_policy: never
     user: root
-    depends_on:
-      - validator
     volumes:
       - prysmvalidator-data:/var/lib/prysm
       - ./.eth/validator_keys:/validator_keys

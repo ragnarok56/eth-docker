@@ -1,6 +1,6 @@
 # hadolint global ignore=DL3007,DL3008,DL3018,DL3059,DL4006
 # Build in a stock Go build container
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 # Unused, this is here to avoid build time complaints
 ARG DOCKER_TAG
@@ -21,7 +21,7 @@ RUN bash -eo pipefail <<'EOF'
   git fetch --all --tags
   CLEANED=$(echo "$BUILD_TARGET" | sed 's/\$\$(/$(/g')
   TARGET=$(eval echo "$CLEANED")
-  if [[ "$TARGET" =~ pr-.+ ]]; then
+  if [[ "$TARGET" =~ ^pr-[1-9][0-9]*$ ]]; then
     git fetch origin pull/$(echo "$TARGET" | cut -d '-' -f 2)/head:build-pr
     git checkout build-pr
   else

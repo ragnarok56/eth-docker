@@ -30,13 +30,12 @@ RUN bash -eo pipefail <<'EOF'
   git fetch --all --tags
   CLEANED=$(echo "$BUILD_TARGET" | sed 's/\$\$(/$(/g')
   TARGET=$(eval echo "$CLEANED")
-  if [[ "$TARGET" =~ pr-.+ ]]; then
+  if [[ "$TARGET" =~ ^pr-[1-9][0-9]*$ ]]; then
     git fetch origin pull/$(echo "$TARGET" | cut -d '-' -f 2)/head:build-pr
     git checkout build-pr
   else
     git checkout "$TARGET"
   fi
-  git submodule update --init --recursive --jobs $(nproc)
   make -j$(nproc) update
   make -j$(nproc) gnosis-build gnosis-vc-build
 EOF
@@ -54,6 +53,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install 
   git \
   git-lfs \
   curl \
+  aria2 \
   && gosu nobody true \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*

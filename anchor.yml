@@ -1,10 +1,10 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 services:
   anchor:
@@ -33,7 +33,7 @@ services:
       - SSV_P2P_PORT_UDP=${SSV_P2P_PORT_UDP}
       - SSV_QUIC_PORT=${SSV_QUIC_PORT}
       - MEV_BOOST=${MEV_BOOST:-false}
-      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR:-}
+      - EPBS_BUILD_FACTOR=${EPBS_BUILD_FACTOR:-}
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
@@ -72,6 +72,7 @@ services:
       - metrics.port=15000
       - metrics.instance=ssv-anchor
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
 volumes:
   ssv-anchor-data:

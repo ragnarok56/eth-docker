@@ -4,24 +4,34 @@ defaults:
   run:
     shell: bash
 
+# ethd skips the warnings it prints after a command
+env:
+  ETHD_FRONTEND: ci
+
 on:
-  push:
+  schedule:
+    - cron: "17 3 * * *"  # Daily at 3:17 AM UTC
+  workflow_dispatch:
   pull_request:
     types: [opened, synchronize, labeled, unlabeled]
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-nimbus-proxy:
     if: |
-      contains(github.event.pull_request.labels.*.name, 'test-nimbus-proxy') ||
+      contains(github.event.pull_request.labels.*.name, 'check-nimbus-proxy') ||
       contains(github.event.pull_request.labels.*.name, 'test-all') ||
-      github.event_name == 'push'
+      github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-      - name: Set up Docker buildx
-        uses: docker/setup-buildx-action@v4
+        uses: actions/checkout@v7
+      - name: Remove podman
+        run: sudo apt-get remove -y podman
       - name: Create .env file
         run: cp default.env .env
       - name: Set Nimbus Verified Proxy
@@ -30,13 +40,13 @@ jobs:
           NETWORK=mainnet
           var=NETWORK
           set_value_in_env
-          COMPOSE_FILE=nimbus-vp.yml
-          var=COMPOSE_FILE
+          CORE_FILES=nimbus-vp.yml
+          var=CORE_FILES
           set_value_in_env
-          RPC_URL=wss://ethereum-rpc.publicnode.com
-          var=RPC_URL
+          RPC_URLS=wss://ethereum-rpc.publicnode.com
+          var=RPC_URLS
           set_value_in_env
-          CL_NODE=https://ethereum.operationsolarstorm.org/
+          CL_NODE=https://ethereum-beacon-api.publicnode.com
           var=CL_NODE
           set_value_in_env
       - name: Start Nimbus Verified Proxy
@@ -45,3 +55,5 @@ jobs:
         run: sleep 30
       - name: Test Nimbus Verified Proxy
         run: ./.github/check-service.sh rpc-proxy
+      - name: Test version
+        run: ./ethd version

@@ -6,6 +6,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exec gosu lhconsensus docker-entrypoint.sh "$@"
 fi
 
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
+fi
+
 
 # Because we're oh-so-clever with + substitution and maxpeers, we may have empty args. Remove them
 __strip_empty_args() {
@@ -32,14 +37,27 @@ if [[ -O /var/lib/lighthouse/beacon/ee-secret/jwtsecret ]]; then
   chmod 666 /var/lib/lighthouse/beacon/ee-secret/jwtsecret
 fi
 
-if [[ "${NETWORK}" =~ ^https?:// ]]; then
+config_dir_path=""
+if [[ "${NETWORK}" = "ephemery" ]]; then
+  config_dir_path="$(ephemery-config.sh /var/lib/lighthouse/beacon/testnet/ephemery)"
+  # A new iteration has a new genesis, and the beacon DB of the old one is for a dead chain.
+  # ee-secret is the JWT secret volume and testnet holds the Ephemery configs; both stay.
+  __iteration="$(basename "$(dirname "${config_dir_path}")")"
+  if [[ -f /var/lib/lighthouse/beacon/ephemery-iteration ]]; then
+    __old_iteration="$(cat /var/lib/lighthouse/beacon/ephemery-iteration)"
+    if [[ ! "${__old_iteration}" = "${__iteration}" ]]; then
+      echo "Ephemery reset from ${__old_iteration} to ${__iteration}, removing the old beacon chain data"
+      find /var/lib/lighthouse/beacon -mindepth 1 -maxdepth 1 ! -name ee-secret ! -name testnet \
+        ! -name ephemery-iteration -exec rm -rf {} +
+    fi
+  fi
+  echo "${__iteration}" > /var/lib/lighthouse/beacon/ephemery-iteration
+elif [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "Custom testnet at ${NETWORK}"
   repo=$(awk -F'/tree/' '{print $1}' <<< "${NETWORK}")
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/lighthouse/beacon/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/lighthouse/beacon/testnet
     cd /var/lib/lighthouse/beacon/testnet
@@ -49,45 +67,33 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/lighthouse/beacon/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
-  set +e
-  __network="--testnet-dir=/var/lib/lighthouse/beacon/testnet/${config_dir} --boot-nodes=${bootnodes}"
+  config_dir_path="/var/lib/lighthouse/beacon/testnet/${config_dir}"
+fi
+if [[ -n "${config_dir_path}" ]]; then
+  if [[ -f "${config_dir_path}/bootstrap_nodes.txt" ]]; then
+    bootnodes="$(paste -sd, "${config_dir_path}/bootstrap_nodes.txt")"
+  else
+    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/bootstrap_nodes.yaml")"
+  fi
+  __network="--testnet-dir=${config_dir_path}"
+  # Only the beacon node takes these, "lighthouse db" does not
+  __bn_network="--boot-nodes=${bootnodes} --ignore-ws-check"
 else
   __network="--network=${NETWORK}"
+  __bn_network=""
 fi
-
-
-# Assume we're not zk-enabled
-__engine="--execution-endpoint ${EL_NODE} --execution-jwt /var/lib/lighthouse/beacon/ee-secret/jwtsecret"
 
 case "${NODE_TYPE}" in
   archive)
-    echo "Lighthouse archive node without pruning"
+    echo "Lighthouse archive node without history pruning"
+    __prune=""
+    ;;
+  blob-archive)
+    echo "Lighthouse blob archive node without blob or history pruning"
     __prune="--prune-blobs=false"
     ;;
   full|pruned)
     __prune=""
-    ;;
-  pruned-with-zkproofs)
-    if [[ ! "${NETWORK}" = "mainnet" ]]; then
-      echo "Lighthouse with zkProof verification only works on mainnet, as far as Eth Docker is aware."
-      echo "Aborting."
-      sleep 30
-      exit 1
-    fi
-    echo "Lighthouse node with zkProof verification. HIGHLY experimental."
-    echo "Please make sure that you have edited \".env\" and changed:"
-    echo "CL_EXTRAS=--boot-nodes enr:-Oy4QJgMz9S1Eb7s13nKIbulKC0nvnt7AEqbmwxnTdwzptxNCGWjc9ipteUaCwqlu2bZDoNz361vGC_IY4fbdkR1K9iCDeuHYXR0bmV0c4gAAAAAAAAABoNjZ2MEhmNsaWVudNGKTGlnaHRob3VzZYU4LjAuMYRldGgykK1TLOsGAAAAAEcGAAAAAACCaWSCdjSCaXCEisV68INuZmSEzCxc24RxdWljgiMpiXNlY3AyNTZrMaEDEIWq41UTcFUgL8LRletpbIwrrpxznIMN_F5jRgatngmIc3luY25ldHMAg3RjcIIjKIR6a3ZtAQ"
-    echo "LH_SRC_BUILD_TARGET=ethproofs/zkattester-demo"
-    echo "LH_SRC_REPO=https://github.com/ethproofs/lighthouse"
-    echo "LH_DOCKERFILE=Dockerfile.source"
-    echo "MEV_BOOST=true"
-    echo "MEV_BUILD_FACTOR=100"
-    echo "And have source-built Lighthouse with \"./ethd update\""
-    echo "A PBS sidecar needs to be in COMPOSE_FILE, and MEV relays need to be configured"
-    echo "Note the bootnodes ENR may have changed, check on the zkEVM attesting Telegram group!"
-    __prune=""
-    __engine="--execution-proofs"
     ;;
   *)
     echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Lighthouse implementation."
@@ -96,22 +102,50 @@ case "${NODE_TYPE}" in
     ;;
 esac
 
+# Assume we're not zk-enabled
+__engine="--execution-endpoint ${EL_NODE} --execution-jwt /var/lib/lighthouse/beacon/ee-secret/jwtsecret"
+
+if [[ "${EL_NODE_TYPE}" = "use-cl-zkproofs" ]]; then
+  if [[ ! "${NETWORK}" = "mainnet" ]]; then
+    echo "Lighthouse with zkProof verification only works on mainnet, as far as Eth Docker is aware."
+    echo "Aborting."
+    sleep 30
+    exit 1
+  fi
+  echo "Lighthouse node with zkProof verification. HIGHLY experimental."
+  echo "Please make sure that you have edited \".env\" and changed:"
+  echo "CL_EXTRAS=--boot-nodes enr:-Oy4QJgMz9S1Eb7s13nKIbulKC0nvnt7AEqbmwxnTdwzptxNCGWjc9ipteUaCwqlu2bZDoNz361vGC_IY4fbdkR1K9iCDeuHYXR0bmV0c4gAAAAAAAAABoNjZ2MEhmNsaWVudNGKTGlnaHRob3VzZYU4LjAuMYRldGgykK1TLOsGAAAAAEcGAAAAAACCaWSCdjSCaXCEisV68INuZmSEzCxc24RxdWljgiMpiXNlY3AyNTZrMaEDEIWq41UTcFUgL8LRletpbIwrrpxznIMN_F5jRgatngmIc3luY25ldHMAg3RjcIIjKIR6a3ZtAQ"
+  echo "LH_SRC_BUILD_TARGET=ethproofs/zkattester-demo"
+  echo "LH_SRC_REPO=https://github.com/ethproofs/lighthouse"
+  echo "LH_DOCKERFILE=Dockerfile.source"
+  echo "MEV_BOOST=true"
+  echo "EPBS_BUILD_FACTOR=always"
+  echo "And have source-built Lighthouse with \"./ethd update\""
+  echo "A PBS sidecar needs to be in COMPOSE_FILE, and MEV relays need to be configured"
+  echo "Note the bootnodes ENR may have changed, check on the zkEVM attesting Telegram group!"
+  __engine="--execution-proofs"
+fi
+
 # Check whether we should rapid sync
 if [[ -n "${CHECKPOINT_SYNC_URL}" ]]; then
   __checkpoint_sync="--checkpoint-sync-url=${CHECKPOINT_SYNC_URL}"
   echo "Checkpoint sync enabled"
-  if [[ "${NODE_TYPE}" = "archive" ]]; then
-    __prune+=" --reconstruct-historic-states --genesis-backfill --disable-backfill-rate-limiting"
+  if [[ "${NODE_TYPE}" =~ archive$ ]]; then
+    __prune+=" --archive --genesis-backfill --disable-backfill-rate-limiting"
   fi
 else
   __checkpoint_sync="--allow-insecure-genesis-sync"
 fi
 
 # Check whether we should use MEV Boost
-if [[ "${MEV_BOOST}" = "true" ]]; then
+# Adjust RIGHT after each network's Glamsterdam hardfork
+if [[ "${MEV_BOOST}" = "true" && "${NETWORK}" =~ ^(hoodi|mainnet)$ ]]; then
   __mev_boost="--builder ${MEV_NODE:-http://mev-boost:18550}"
   echo "MEV Boost enabled"
 else
+  if [[ "${MEV_BOOST}" = "true" ]]; then
+    echo "MEV_BOOST is true, but MEV Boost is not used on ${NETWORK}. Ignoring it."
+  fi
   __mev_boost=""
 fi
 
@@ -141,13 +175,33 @@ if [[ "${COMPOSE_FILE}" =~ (grafana\.yml|grafana-rootless\.yml) ]]; then
   export OTEL_TRACES_SAMPLER=parentbased_traceidratio
   export OTEL_TRACES_SAMPLER_ARG=0.01
   export OTEL_EXPORTER_OTLP_INSECURE=true
+  export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
 else
   __trace=""
 fi
 
+if [[ "${EL_NODE_TYPE}" != "use-cl-zkproofs" ]]; then
+  i=0
+  while true; do
+    if [ -f /var/lib/lighthouse/beacon/ee-secret/jwtsecret ]; then
+      break
+    else
+      if [[ "$i" -eq 5 ]]; then
+        echo "Did not see the JWT secret file six times in a row. This is either a bug or a very slow execution layer client startup."
+        echo "Starting consensus layer client anyway: It may fail."
+        break
+      else
+        echo "Waiting for JWT secret file to be created by execution layer client"
+        sleep 5
+        ((++i))
+      fi
+    fi
+  done
+fi
+
 if [[ -f /var/lib/lighthouse/beacon/prune-marker ]]; then
   rm -f /var/lib/lighthouse/beacon/prune-marker
-  if [[ "${NODE_TYPE}" = "archive" ]]; then
+  if [[ "${NODE_TYPE}" =~ archive$ ]]; then
     echo "Lighthouse is an archive node. Not attempting to prune state: Aborting."
     exit 1
   fi
@@ -157,5 +211,5 @@ if [[ -f /var/lib/lighthouse/beacon/prune-marker ]]; then
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__mev_boost} ${__checkpoint_sync} ${__engine} ${__prune} ${__beacon_stats} ${__trace} ${__ipv6} ${CL_EXTRAS}
+  exec "$@" ${__network} ${__bn_network} ${__mev_boost} ${__checkpoint_sync} ${__engine} ${__prune} ${__beacon_stats} ${__trace} ${__ipv6} ${CL_EXTRAS}
 fi

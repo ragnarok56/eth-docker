@@ -1,19 +1,20 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
-
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 x-build: &lh-build
   context: ./lighthouse
+  additional_contexts:
+    ephemery: ./ephemery
   dockerfile: ${LH_DOCKERFILE}
   args:
     - BUILD_TARGET=${LH_SRC_BUILD_TARGET:-stable}
     - SRC_REPO=${LH_SRC_REPO:-https://github.com/sigp/lighthouse}
-    - DOCKER_TAG=${LH_DOCKER_TAG:-latest-modern}
+    - DOCKER_TAG=${LH_DOCKER_TAG:-latest}
     - DOCKER_REPO=${LH_DOCKER_REPO:-sigp/lighthouse}
 
 services:
@@ -47,8 +48,10 @@ services:
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - CL_EXTRAS=${CL_EXTRAS:-}
       - NODE_TYPE=${CL_NODE_TYPE:-pruned}
+      - EL_NODE_TYPE=${EL_NODE_TYPE}
       - EL_NODE=${EL_NODE}
       - IPV6=${IPV6:-false}
+      - HOST_IP=${HOST_IP:-}
       - CL_P2P_PORT=${CL_P2P_PORT:-9000}
       - CL_QUIC_PORT=${CL_QUIC_PORT:-9001}
       - NETWORK=${NETWORK}
@@ -97,6 +100,7 @@ services:
       - metrics.port=8008
       - metrics.instance=consensus
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
   validator:
     restart: "unless-stopped"
@@ -113,7 +117,10 @@ services:
       - /etc/localtime:/etc/localtime:ro
     environment:
       - MEV_BOOST=${MEV_BOOST}
-      - MEV_BUILD_FACTOR=${MEV_BUILD_FACTOR}
+      - EPBS_BUILDERS=${EPBS_BUILDERS}
+      - EPBS_BUILDER_URLS=${EPBS_BUILDER_URLS}
+      - EPBS_BUILD_FACTOR=${EPBS_BUILD_FACTOR}
+      - EPBS_MIN_BID=${EPBS_MIN_BID}
       - BEACON_STATS_API=${BEACON_STATS_API}
       - BEACON_STATS_MACHINE=${BEACON_STATS_MACHINE}
       - DOPPELGANGER=${DOPPELGANGER}
@@ -151,18 +158,14 @@ services:
       - --suggested-fee-recipient
       - ${FEE_RECIPIENT}
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.${VC_HOST:-vc}.service=${VC_HOST:-vc}
-      - traefik.http.routers.${VC_HOST:-vc}.entrypoints=websecure
-      - traefik.http.routers.${VC_HOST:-vc}.rule=Host(`${VC_HOST:-vc}.${DOMAIN}`)
-      - traefik.http.routers.${VC_HOST:-vc}.tls.certresolver=letsencrypt
-      - traefik.http.services.${VC_HOST:-vc}.loadbalancer.server.port=${KEY_API_PORT:-7500}
       - metrics.scrape=true
       - metrics.path=/metrics
       - metrics.port=8009
       - metrics.instance=validator
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
+# Deprecate and remove after Hegotá
   validator-exit:
     profiles: ["tools"]
     restart: "no"
@@ -176,6 +179,8 @@ services:
         condition: service_started
       lighthouse-builder:
         condition: service_completed_successfully
+    environment:
+      - CL_NODE=${CL_NODE}
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - ./.eth/validator_keys:/validator_keys
@@ -186,8 +191,6 @@ services:
       - account
       - validator
       - exit
-      - --beacon-node
-      - http://consensus:5052
       - --datadir
       - /var/lib/lighthouse
       - --network
@@ -207,8 +210,6 @@ services:
     # 1000. The UID has to be able to write .eth/validator_keys
     # for the "keys delete" command.
     user: root
-    depends_on:
-      - validator
     volumes:
       - lhvalidator-data:/var/lib/lighthouse
       - ./.eth/validator_keys:/validator_keys

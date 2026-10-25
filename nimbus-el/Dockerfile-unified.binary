@@ -1,0 +1,55 @@
+# hadolint global ignore=DL3007,DL3008,DL3022,DL3059,DL3066
+ARG DOCKER_TAG=master
+ARG DOCKER_REPO=statusim/nimbus-eth1
+
+FROM ${DOCKER_REPO}:${DOCKER_TAG}
+
+# Included here to avoid build-time complaints
+ARG BUILD_TARGET
+ARG SRC_REPO
+
+ARG USER=user
+ARG UID=10002
+
+USER root
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends \
+  ca-certificates \
+  tzdata \
+  gosu \
+  adduser \
+  bash \
+  git \
+  git-lfs \
+  curl \
+  aria2 \
+  && gosu nobody true \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN if id -u "${USER}" >/dev/null 2>&1; then \
+      groupmod -g "${UID}" "${USER}" && \
+      usermod -u "${UID}" -g "${UID}" "${USER}"; \
+    else \
+      adduser \
+        --disabled-password \
+        --gecos "" \
+        --home "/nonexistent" \
+        --shell "/usr/sbin/nologin" \
+        --no-create-home \
+        --uid "${UID}" \
+        "${USER}"; \
+    fi
+
+RUN mkdir -p /var/lib/nimbus && chown -R ${USER}:${USER} /var/lib/nimbus && chmod 700 /var/lib/nimbus
+
+RUN cp /home/user/nimbus-eth1/build/nimbus /usr/local/bin/ && chown ${USER}:${USER} /usr/local/bin/nimbus
+# Cannot assume buildkit, hence no chmod
+COPY --chown=${USER}:${USER} ./docker-entrypoint-unified.sh /usr/local/bin/docker-entrypoint.sh
+COPY --from=ephemery --chown=${USER}:${USER} ephemery-config.sh /usr/local/bin/
+# Belt and suspenders
+RUN chmod -R 755 /usr/local/bin/*
+
+USER ${USER}
+
+ENTRYPOINT ["nimbus"]

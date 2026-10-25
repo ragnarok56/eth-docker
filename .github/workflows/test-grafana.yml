@@ -4,31 +4,44 @@ defaults:
   run:
     shell: bash
 
+# ethd skips the warnings it prints after a command
+env:
+  ETHD_FRONTEND: ci
+
 on:
-  push:
+  schedule:
+    - cron: "17 3 * * *"  # Daily at 3:17 AM UTC
+  workflow_dispatch:
   pull_request:
     types: [opened, synchronize, labeled, unlabeled]
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-grafana:
     if: |
-      contains(github.event.pull_request.labels.*.name, 'test-grafana') ||
+      contains(github.event.pull_request.labels.*.name, 'check-grafana') ||
       contains(github.event.pull_request.labels.*.name, 'test-all') ||
-      github.event_name == 'push'
+      github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-      - name: Set up Docker buildx
-        uses: docker/setup-buildx-action@v4
+        uses: actions/checkout@v7
+      - name: Remove podman
+        run: sudo apt-get remove -y podman
       - name: Create .env file
         run: cp default.env .env
       - name: Set Lighthouse/Geth/Grafana
         run: |
           source ./.github/helper.sh
-          COMPOSE_FILE=lighthouse.yml:geth.yml:grafana.yml
-          var=COMPOSE_FILE
+          CORE_FILES=lighthouse.yml:geth.yml:grafana.yml
+          var=CORE_FILES
+          set_value_in_env
+          FEE_RECIPIENT=0xDccf8451070a86183eE70D330C4c43b686E9CF86
+          var=FEE_RECIPIENT
           set_value_in_env
       - name: Start Lighthouse/Geth/Grafana
         run: ./ethd up
@@ -46,9 +59,11 @@ jobs:
         run: ./.github/check-service.sh json-exporter
       - name: Test cadvisor
         run: ./.github/check-service.sh cadvisor
-      - name: Test promtail
-        run: ./.github/check-service.sh promtail
+      - name: Test alloy
+        run: ./.github/check-service.sh alloy
       - name: Test Loki
         run: ./.github/check-service.sh loki
       - name: Test Grafana
         run: ./.github/check-service.sh grafana
+      - name: Test version
+        run: ./ethd version

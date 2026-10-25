@@ -6,6 +6,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exec gosu besu "${BASH_SOURCE[0]}" "$@"
 fi
 
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
+fi
+
 
 # Because we're oh-so-clever with + substitution and maxpeers, we may have empty args. Remove them
 __strip_empty_args() {
@@ -45,8 +50,6 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/besu/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/besu/testnet
     cd /var/lib/besu/testnet
@@ -56,21 +59,59 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/besu/testnet/${config_dir}/enodes.yaml" | paste -sd ",")"
-  set +e
-  __network="--genesis-file=/var/lib/besu/testnet/${config_dir}/besu.json --bootnodes=${bootnodes}"
+  config_dir_path="/var/lib/besu/testnet/${config_dir}"
+  if [[ -f "${config_dir_path}/enodes.txt" ]]; then
+    bootnodes="$(paste -sd, "${config_dir_path}/enodes.txt")"
+  else
+    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/enodes.yaml")"
+  fi
+  if [[ -f "${config_dir_path}/bootstrap_nodes.txt" ]]; then
+    v5_bootnodes="$(paste -sd, "${config_dir_path}/bootstrap_nodes.txt")"
+  else
+    v5_bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/bootstrap_nodes.yaml")"
+  fi
+  if [[ -n "${bootnodes}" && -n "${v5_bootnodes}" ]]; then
+    bootnodes+=",${v5_bootnodes}"
+  elif [[ -n "${v5_bootnodes}" ]]; then
+    bootnodes="${v5_bootnodes}"
+  fi
+  __network="--genesis-file=${config_dir_path}/besu.json --bootnodes=${bootnodes} --bonsai-limit-trie-logs-enabled=false"
 else
   __network="--network ${NETWORK}"
 fi
 
 case "${NODE_TYPE}" in
   archive)
-    echo "Besu archive node without pruning"
-    __prune="--data-storage-format=FOREST --sync-mode=FULL"
+    if [[ ! -d /var/lib/besu/database && ! -d /var/lib/besu-og/database ]]; then
+      touch /var/lib/besu/bonsai-archive
+    fi
+    if [[ -f /var/lib/besu/bonsai-archive ]]; then
+      __prune="--data-storage-format=X_BONSAI_ARCHIVE --sync-mode=FULL --snapsync-server-enabled"
+      echo "Besu bonsai archive node without history expiry."
+    else
+      echo "Besu legacy forest archive node without history expiry. Consider a resync to a Bonsai archive"
+      __prune="--data-storage-format=FOREST --sync-mode=FULL --snapsync-server-enabled"
+    fi
+    if [[ !  "${NETWORK}" =~ ^https?:// ]]; then
+      if [[ -n "${ERE_URL}" ]]; then
+        echo "Attempting to load Era1 files from ${ERE_URL}. Note Besu does not support EraE yet!"
+        __prune+=" --era1-import-prepipeline-enabled=true --era1-data-uri=${ERE_URL}"
+      else
+        echo "Consider setting \"ERE_URL\" to an Era1 (!) URL in \".env\" to speed up sync."
+      fi
+    fi
     ;;
   full)
-    echo "Besu full node without history expiry"
-    __prune="--snapsync-synchronizer-pre-checkpoint-headers-only-enabled=false --snapsync-server-enabled"
+    echo "Besu full node without history expiry. Requires \"full\" sync and will take a long time to sync"
+    __prune="--sync-mode=FULL --bonsai-limit-trie-logs-enabled=false --snapsync-server-enabled"
+    if [[ !  "${NETWORK}" =~ ^https?:// ]]; then
+      if [[ -n "${ERE_URL}" ]]; then
+        echo "Attempting to load Era1 files from ${ERE_URL}. Note Besu does not support EraE yet!"
+        __prune+=" --era1-import-prepipeline-enabled=true --era1-data-uri=${ERE_URL}"
+      else
+        echo "Consider setting \"ERE_URL\" to an Era1 (!) URL in \".env\" to speed up sync."
+      fi
+    fi
     ;;
   pre-merge-expiry)
     case "${NETWORK}" in
@@ -85,13 +126,23 @@ case "${NODE_TYPE}" in
     esac
     ;;
   rolling-expiry)
-    echo "Besu minimal node with rolling history expiry, keeps 1 year."
-    # 365 days = 82125 epochs = 2628000 slots / blocks
-    __prune="--snapsync-server-enabled --Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=2628000"
+    echo "Besu minimal node with rolling history expiry, keeps ~5 months"
+    # 33_024 epochs = 1056768 slots / blocks
+    __prune="--snapsync-server-enabled --Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=1056768"
     ;;
   aggressive-expiry)
     echo "Besu minimal node with aggressive expiry"
     __prune="--snapsync-server-enabled --Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=113056"
+    ;;
+  custom)
+    echo "Besu default block retention; adjust as desired by \"EL_EXTRAS\" in \".env\""
+    __prune=""
+    ;;
+  use-cl-zkproofs)
+    echo "ERROR: The node type ${NODE_TYPE} is designed to not run an execution layer client"
+    echo "Remove \"besu.yml\" from configuration, or change the node type"
+    sleep 30
+    exit 1
     ;;
   *)
     echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Besu implementation."
@@ -107,25 +158,35 @@ else
   __datadir="--data-path /var/lib/besu"
 fi
 
-# Track at https://github.com/orgs/hyperledger/projects/111?query=sort%3Aupdated-desc+is%3Aopen
-# and issues #4089 and #9686. Discv5 / IPv6 currently not implemented in Besu as of Jan 2026
 # DiscV5 for IPV6
-#if [[ "${IPV6:-false}" = "true" ]]; then
-#  echo "Configuring Besu for discv5 for IPv6 advertisements"
-#  __ipv6="--Xv5-discovery-enabled"
-#else
-#  __ipv6=""
-#fi
+if [[ "${IPV6}" = "true" ]]; then
+  echo "Configuring Besu for IPv6"
+  __ipv6="--p2p-interface-ipv6=:: --p2p-port-ipv6=${EL_P2P_PORT} --p2p-ipv6-outbound-enabled"
+# Address discovery on v6 is not implemented
+  ipv6_pattern="^[0-9A-Fa-f]{1,4}:" # Sufficient to check the start
+  set +e
+  public_v6=$(curl -s -m2 -6 https://ifconfig.me)
+  set -e
+  if [[ "${public_v6}" =~ ${ipv6_pattern} ]]; then
+    __ipv6+=" --p2p-host-ipv6=${public_v6}"
+  fi
+else
+  __ipv6=""
+fi
 
 __strip_empty_args "$@"
 set -- "${__args[@]}"
 
 # Traces
 if [[ "${COMPOSE_FILE}" =~ (grafana\.yml|grafana-rootless\.yml) ]]; then
+  __trace="--metrics-protocol=opentelemetry"
+  export OTEL_METRICS_EXPORTER=none
   export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
   export OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317
   export OTEL_EXPORTER_OTLP_INSECURE=true
   export OTEL_SERVICE_NAME=besu
+else
+  __trace=""
 fi
 
 if [[ -f /var/lib/besu/prune-marker ]]; then
@@ -141,6 +202,5 @@ if [[ -f /var/lib/besu/prune-marker ]]; then
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-#  exec "$@" ${__datadir} ${__network} ${__ipv6} ${__prune} ${EL_EXTRAS}
-  exec "$@" ${__datadir} ${__network} ${__prune} ${EL_EXTRAS}
+  exec "$@" ${__datadir} ${__network} ${__ipv6} ${__prune} ${__trace} ${EL_EXTRAS}
 fi

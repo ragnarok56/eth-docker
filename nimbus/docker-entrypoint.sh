@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
+set -Eeuo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
   chown -R user:user /var/lib/nimbus
   exec gosu user docker-entrypoint.sh "$@"
+fi
+
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
 fi
 
 
@@ -20,10 +26,93 @@ __strip_empty_args() {
 
 __normalize_int() {
   local v=$1
-  if [[ "${v}" =~ ^[0-9]+$ ]]; then
-    v=$((10#${v}))
+  # Strip leading zeros as text. Arithmetic would overflow on the largest boost factors
+  if [[ "${v}" =~ ^0*([0-9]+)$ ]]; then
+    v="${BASH_REMATCH[1]}"
   fi
   printf '%s' "${v}"
+}
+
+
+__download_erc_files() {
+# Copyright (c) 2025 Status Research & Development GmbH and 2026 Eth Docker maintainers.
+# Licensed under either of:
+# - Apache License, version 2.0
+# - MIT license
+# at your option. This file may not be copied, modified, or distributed except
+# according to those terms.
+
+# Usage: __download_erc_files <download_url> <download_path>
+
+  local download_url
+  local download_dir
+  local base_url
+  local completed
+  local percent
+  local total_files
+  local aria_pid
+
+  if [[ $# -ne 2 ]]; then
+    echo "__download_erc_files called without <download_url> <download_path>. This is a bug."
+    exit 70
+  fi
+
+  download_url="$1"
+  download_dir="$2"
+
+  mkdir -p "${download_dir}"
+  pushd "${download_dir}" > /dev/null || { echo "Could not change directory to ${download_dir}. This is a bug."; exit 70; }
+
+  # 🔧 Normalize base URL (handle trailing slash)
+  case "${download_url}" in
+    */)           base_url="${download_url%/}" ;;
+    *)            base_url="${download_url}" ;;
+  esac
+
+  curl -fsS "${base_url}/" | sed -n 's/.*href="\([^"]*\.\(era\|erc\)\)".*/\1/p' > erc_files.txt
+  total_files=$(wc -l < erc_files.txt)
+  sed -i "s|^|${base_url}/|" erc_files.txt
+  aria2c -x 8 -j 5 -c -i erc_files.txt \
+    --dir="." \
+    --console-log-level=warn \
+    --quiet=true \
+    --summary-interval=0 \
+    --continue=true \
+    > /dev/null 2>&1 &
+
+  aria_pid=$!
+
+  echo "Downloading EraC history files"
+  echo "📥 Starting download of ${total_files} files..."
+  while kill -0 "${aria_pid}" 2> /dev/null; do
+    completed=$(find . -type f \( -name '*.era' -o -name '*.erc' \) | wc -l)
+    percent=$(awk "BEGIN { printf \"%.1f\", (${completed}/${total_files})*100 }")
+    echo "📦 Download Progress: ${percent}% complete (${completed} / ${total_files} files)"
+    sleep 10
+  done
+
+  wait "${aria_pid}" && exitstatus=0 || exitstatus=$?
+  if [[ "${exitstatus}" -ne 0 ]]; then
+    echo "EraC download failed with exit code ${exitstatus}"
+    exit "${exitstatus}"
+  fi
+
+  completed=$(find . -type f \( -name '*.era' -o -name '*.erc' \) | wc -l)
+  echo "📦 Download Progress: 100% complete (${completed} / ${total_files} files)"
+
+  echo "✅ All files downloaded to: ${download_dir}"
+
+  rm -f erc_files.txt
+
+  echo "Verifying checksums"
+  if curl -fsS -O "${base_url}/checksums_sha256.txt" 2>/dev/null; then
+    sha256sum -c checksums_sha256.txt --ignore-missing
+    echo "✅ All checksums verified"
+  else
+    echo "No checksums file available, skipping verification"
+  fi
+
+  popd > /dev/null
 }
 
 
@@ -45,14 +134,30 @@ if [[ -O /var/lib/nimbus/ee-secret/jwtsecret ]]; then
   chmod 666 /var/lib/nimbus/ee-secret/jwtsecret
 fi
 
-if [[ "${NETWORK}" =~ ^https?:// ]]; then
+config_dir_path=""
+if [[ "${NETWORK}" = "ephemery" ]]; then
+  config_dir_path="$(ephemery-config.sh /var/lib/nimbus/testnet/ephemery)"
+  # A new iteration has a new genesis, and the chain data of the old one is for a dead chain
+  __iteration="$(basename "$(dirname "${config_dir_path}")")"
+  if [[ -f /var/lib/nimbus/ephemery-iteration ]]; then
+    __old_iteration="$(cat /var/lib/nimbus/ephemery-iteration)"
+    if [[ ! "${__old_iteration}" = "${__iteration}" ]]; then
+      echo "Ephemery reset from ${__old_iteration} to ${__iteration}, removing the old chain data"
+      rm -rf /var/lib/nimbus/db
+      rm -f /var/lib/nimbus/setupdone
+      if [[ "${EMBEDDED_VC}" = "true" ]]; then
+        echo "Removing the old slashing protection DB of the embedded validator client"
+        rm -f /var/lib/nimbus/validators/slashing_protection.sqlite3*
+      fi
+    fi
+  fi
+  echo "${__iteration}" > /var/lib/nimbus/ephemery-iteration
+elif [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "Custom testnet at ${NETWORK}"
   repo=$(awk -F'/tree/' '{print $1}' <<< "${NETWORK}")
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/nimbus/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/nimbus/testnet
     cd /var/lib/nimbus/testnet
@@ -62,81 +167,200 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/nimbus/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
-  set +e
-  __network="--network=/var/lib/nimbus/testnet/${config_dir} --bootstrap-node=${bootnodes}"
+  config_dir_path="/var/lib/nimbus/testnet/${config_dir}"
+fi
+if [[ -n "${config_dir_path}" ]]; then
+  if [[ -f "${config_dir_path}/bootstrap_nodes.txt" ]]; then
+    bootnodes="$(paste -sd, "${config_dir_path}/bootstrap_nodes.txt")"
+  else
+    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/bootstrap_nodes.yaml")"
+  fi
+  __network="--network=${config_dir_path}"
+  # trustedNodeSync does not take bootnodes, only the node itself does. One flag per node, Nimbus does not
+  # split a comma-separated list
+  __bootnodes="--bootstrap-node=${bootnodes//,/ --bootstrap-node=}"
 else
   __network="--network=${NETWORK}"
+  __bootnodes=""
 fi
 
-if [[ -n "${CHECKPOINT_SYNC_URL:+x}" && ! -f /var/lib/nimbus/setupdone ]]; then
-  if [[ "${NODE_TYPE}" = "archive" ]]; then
-    echo "Starting checkpoint sync with backfill and archive reindex. Nimbus will restart when done."
-# Word splitting is desired for the command line parameters
+# Nimbus cannot read the oversized response headers GitHub sends with the Hoodi genesis, so curl fetches it instead.
+# trustedNodeSync has no --genesis-state, it gets a network directory that holds the genesis.
+# beacon_node.enr only exists once the node has started on an initialized database
+# shortcut: Hoodi only, remove once Nimbus can download the Hoodi genesis itself again
+__tns_network="${__network}"
+__genesis_state=""
+if [[ "${NETWORK}" = "hoodi" && ! -f /var/lib/nimbus/beacon_node.enr ]]; then
+  mkdir -p /tmp/hoodi
+  for __file in config.yaml deposit_contract_block.txt; do
+    curl -fsSL -o "/tmp/hoodi/${__file}" "https://raw.githubusercontent.com/eth-clients/hoodi/main/metadata/${__file}"
+  done
+  if [[ ! -f /tmp/hoodi/genesis.ssz ]]; then
+    echo "Downloading the Hoodi genesis state"
+    curl -fsSL -o /tmp/hoodi/genesis.ssz.part https://github.com/eth-clients/hoodi/releases/download/genesis/genesis.ssz
+    mv /tmp/hoodi/genesis.ssz.part /tmp/hoodi/genesis.ssz
+  fi
+  __tns_network="--network=/tmp/hoodi"
+  __genesis_state="--genesis-state=/tmp/hoodi/genesis.ssz"
+fi
+
+if [[ -n "${CHECKPOINT_SYNC_URL}" && ! -f /var/lib/nimbus/setupdone ]]; then
+  if [[ "${CL_NODE_TYPE}" =~ ^(archive|blob-archive)$ ]]; then
+    if [[ -z "${ERC_URL}" ]]; then
+      echo "Nimbus cannot build an archive node from only a checkpoint sync. Attempting to sync from genesis"
+      echo "It'd be much better to also use \"ERC_URL\" to download EraC files"
+    else
+      echo "Starting Checkpoint sync. EraC files will be downloaded next."
 # shellcheck disable=SC2086
-    /usr/local/bin/nimbus_beacon_node trustedNodeSync --backfill=true --reindex ${__network} --data-dir=/var/lib/nimbus --trusted-node-url="${CHECKPOINT_SYNC_URL}"
+      nimbus_beacon_node trustedNodeSync --backfill=false ${__tns_network} --data-dir=/var/lib/nimbus --trusted-node-url="${CHECKPOINT_SYNC_URL}"
+    fi
     touch /var/lib/nimbus/setupdone
   else
     echo "Starting checkpoint sync. Nimbus will restart when done."
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-    /usr/local/bin/nimbus_beacon_node trustedNodeSync --backfill=false ${__network} --data-dir=/var/lib/nimbus --trusted-node-url="${CHECKPOINT_SYNC_URL}"
+    nimbus_beacon_node trustedNodeSync --backfill=false ${__tns_network} --data-dir=/var/lib/nimbus --trusted-node-url="${CHECKPOINT_SYNC_URL}"
     touch /var/lib/nimbus/setupdone
   fi
 fi
 
+__erc_dir=""
+if [[ -n "${ERC_URL}" && ! "${NETWORK}" =~ ^https?:// && ! "${NETWORK}" = "ephemery" ]]; then  # Named network
+  if [[ "${CL_NODE_TYPE}" =~ ^(archive|blob-archive)$ ]]; then
+    if [[ ! -f /var/lib/nimbus/erc-download-complete ]]; then
+       if [[ -n "${CHECKPOINT_SYNC_URL}" ]]; then
+        echo "Starting EraC history file download from ${ERC_URL}"
+        __download_erc_files "${ERC_URL}" /var/lib/nimbus/erc
+        touch /var/lib/nimbus/erc-download-complete
+      else
+        echo "You have EraC files with \"ERC_URL\" but are also genesis syncing. Skipping EraC download."
+        echo "You can specify a \"CHECKPOINT_SYNC_URL\" and resync."
+      fi
+    fi
+    if [[ -f /var/lib/nimbus/erc-download-complete ]]; then
+      __erc_dir="--era-dir=/var/lib/nimbus/erc"
+    fi
+  else
+    echo "Nimbus is not an archive node, it uses ${CL_NODE_TYPE}. Skipping EraC download."
+  fi
+fi
+
+# Adjust RIGHT after each network's Glamsterdam hardfork
+# MEV Boost implies ePBS builders only on networks that haven't forked yet
+if [[ "${MEV_BOOST}" = "true" && "${NETWORK}" =~ ^(hoodi|mainnet)$ ]]; then
+  __mev_active=1
+else
+  __mev_active=0
+fi
+
 # Check whether we should use MEV Boost
-if [[ "${MEV_BOOST}" = "true" ]]; then
-  __mev_boost="--payload-builder=true --payload-builder-url=${MEV_NODE:-http://mev-boost:18550}"
+if [[ "${__mev_active}" -eq 1 ]]; then
+  __epbs="--payload-builder=true --payload-builder-url=${MEV_NODE:-http://mev-boost:18550}"
   echo "MEV Boost enabled"
-  if [[ "${EMBEDDED_VC}" = "true" ]]; then
-    build_factor="$(__normalize_int "${MEV_BUILD_FACTOR}")"
+else
+  __epbs=""
+fi
+
+# Check whether we should use ePBS
+if [[ "${EMBEDDED_VC}" = "true" ]]; then
+  if [[ "${__mev_active}" -eq 1 || "${EPBS_BUILDERS}" = "true" ]]; then
+    if [[ "${__mev_active}" -eq 1 ]]; then
+      if [[ "${EPBS_BUILDERS}" = "false" ]]; then
+        echo "ePBS builders are meant to be disabled, but MEV Boost is true, which will enable them anyway."
+        echo "Update Eth Docker again after ${NETWORK}'s Glamsterdam hard fork to fix this."
+      else
+        echo "Update Eth Docker again after mainnet Glamsterdam hard fork, expected December 2026, to remove MEV Boost."
+      fi
+    fi
+    if [[ "${EPBS_BUILDERS}" = "true" ]]; then
+      echo "ePBS builders enabled"
+    fi
+
+    build_factor="$(__normalize_int "${EPBS_BUILD_FACTOR}")"
+    if [[ "${build_factor}" = "maxprofit" ]]; then
+      build_factor=100  # 100 means profit maximization, as in the keymanager API
+    fi
     case "${build_factor}" in
-      0)
-        __mev_boost=""
-        __mev_factor=""
-        echo "Disabled MEV Boost because MEV_BUILD_FACTOR is 0."
-        echo "WARNING: This conflicts with MEV_BOOST true. Set factor in a range of 1 to 100"
+      0|local)
+        if [[ "${__mev_active}" -eq 1 ]]; then
+          __epbs=""
+          echo "Disabled MEV Boost because EPBS_BUILD_FACTOR is ${build_factor}."
+          echo "WARNING: This conflicts with MEV_BOOST true. Set a factor above 0, or maxprofit or always"
+        else
+          __epbs="--builder-boost-factor=0"
+          echo "Build blocks locally, use ePBS builders as fallback. EPBS_BUILD_FACTOR is ${build_factor}."
+        fi
         ;;
-      [1-9]|[1-9][0-9])
-        local_factor=$((100 - build_factor))
-        __mev_factor="--local-block-value-boost=${local_factor}"
-        echo "Enabled MEV local block value boost of ${local_factor}"
-        ;;
-      100)
-        __mev_factor="--local-block-value-boost=0"
-        echo "Do not boost local blocks, MEV_BUILD_FACTOR 100"
-        echo "This may still build a local block, if it pays more than a builder block"
+      always)
+        __epbs+=" --builder-boost-factor=18446744073709551615"
+        echo "Always prefer ePBS builder blocks, EPBS_BUILD_FACTOR always"
         ;;
       "")
-        __mev_factor=""
-        echo "Use default --local-block-value-boost"
+        echo "Use default --builder-boost-factor"
         ;;
       *)
-        __mev_factor=""
-        echo "WARNING: MEV_BUILD_FACTOR has an invalid value of \"${build_factor}\""
+        if [[ "${build_factor}" =~ ^[1-9][0-9]{0,19}$ ]]; then
+          # Compare as text, bash arithmetic cannot hold uint64. Equal length makes this a numeric comparison
+          # shellcheck disable=SC2071
+          if [[ ${#build_factor} -eq 20 && "${build_factor}" > "18446744073709551615" ]]; then
+            echo "EPBS_BUILD_FACTOR ${build_factor} exceeds the 64-bit maximum, capping it to 18446744073709551615"
+            build_factor=18446744073709551615
+          fi
+          __epbs+=" --builder-boost-factor=${build_factor}"
+          echo "Enabled ePBS Build Factor of ${build_factor}"
+        else
+          echo "WARNING: EPBS_BUILD_FACTOR has an invalid value of \"${build_factor}\""
+        fi
         ;;
     esac
+
+    if [[ -n "${EPBS_MIN_BID}" ]]; then
+      min_bid="$(__normalize_float "${EPBS_MIN_BID}")"
+      if [[ "${min_bid}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        min_bid_gwei=$(awk -v v="${min_bid}" 'BEGIN{printf "%.0f", v * 1000000000}')
+        __epbs+=" --builder-min-bid=${min_bid_gwei}"
+      else
+        echo "WARNING: EPBS_MIN_BID has an invalid value of \"${EPBS_MIN_BID}\", ignoring"
+      fi
+    fi
+
+    if [[ -n "${EPBS_BUILDER_URLS}" ]]; then
+      builders=$(echo "${EPBS_BUILDER_URLS//[[:space:]]/}" | tr ',' ' ')
+      __builder_urls=()
+      for builder in ${builders}; do
+        __builder_urls+=("--payload-builder-url=${builder}")
+      done
+      if [[ "${__mev_active}" -eq 1 ]]; then
+        echo "You have ePBS builder URLs, which pre-Glamsterdam are configured alongside MEV Boost on Nimbus."
+        echo "Update Eth Docker again after Glamsterdam to remove the mev-boost URL."
+      fi
+    fi
+  else
+    __epbs="--builder-boost-factor=0"
+    echo "Build blocks locally, use ePBS builders as fallback"
   fi
-else
-  __mev_boost=""
-  __mev_factor=""
 fi
 
 # Check whether we should enable doppelganger protection
-if [[ "${DOPPELGANGER}" = "true" ]]; then
-  __doppel=""
-  echo "Doppelganger protection enabled, VC will pause for 2 epochs"
+if [[ "${EMBEDDED_VC}" = "true" ]]; then
+  if [[ "${DOPPELGANGER}" = "true" ]]; then
+    __doppel=""
+    echo "Doppelganger protection enabled, VC will pause for 2 epochs"
+  else
+    __doppel="--doppelganger-detection=false"
+  fi
 else
-  __doppel="--doppelganger-detection=false"
+  __doppel=""
 fi
 
-__log_level="--log-level=${LOG_LEVEL^^}"
-
-case "${NODE_TYPE}" in
+case "${CL_NODE_TYPE}" in
+  blob-archive)
+    echo "Nimbus archive node without history or blob pruning."
+    __prune="--history=column-archive --reindex"
+    ;;
   archive)
-    echo "Nimbus archive node without pruning"
-    __prune="--history=archive"
+    echo "Nimbus archive node without history pruning."
+    __prune="--history=archive --reindex"
     ;;
   full)
     __prune=""
@@ -146,7 +370,7 @@ case "${NODE_TYPE}" in
     __prune="--history=prune"
     ;;
   *)
-    echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Nimbus implementation."
+    echo "ERROR: The node type ${CL_NODE_TYPE} is not known to Eth Docker's Nimbus implementation."
     sleep 30
     exit 1
     ;;
@@ -168,15 +392,32 @@ else
   __w3s_url=""
 fi
 
+if [[ "${EMBEDDED_VC}" = "true" &&  "${DEFAULT_GRAFFITI}" != "true" ]]; then
+  __graffiti_args=(--graffiti="${GRAFFITI}")
+else
+  __graffiti_args=()
+fi
+
 __strip_empty_args "$@"
 set -- "${__args[@]}"
 
-if [[ "${DEFAULT_GRAFFITI}" = "true" ]]; then
+i=0
+while true; do
+  if [ -f /var/lib/nimbus/ee-secret/jwtsecret ]; then
+    break
+  else
+    if [[ "$i" -eq 5 ]]; then
+      echo "Did not see the JWT secret file six times in a row. This is either a bug or a very slow execution layer client startup."
+      echo "Starting consensus layer client anyway: It may fail."
+      break
+    else
+      echo "Waiting for JWT secret file to be created by execution layer client"
+      sleep 5
+      ((++i))
+    fi
+  fi
+done
+
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__mev_factor} ${__log_level} ${__doppel} ${__prune} ${CL_EXTRAS} ${VC_EXTRAS}
-else
-# Word splitting is desired for the command line parameters
-# shellcheck disable=SC2086
-  exec "$@" ${__network} ${__w3s_url} "--graffiti=${GRAFFITI}" ${__mev_boost} ${__mev_factor} ${__log_level} ${__doppel} ${__prune} ${CL_EXTRAS} ${VC_EXTRAS}
-fi
+exec "$@" ${__network} ${__genesis_state} ${__bootnodes} ${__w3s_url} "${__graffiti_args[@]}" ${__epbs} "${__builder_urls[@]}" ${__doppel} ${__prune} ${__erc_dir} ${CL_EXTRAS} ${VC_EXTRAS}

@@ -1,0 +1,66 @@
+[project]
+name = "ddns"
+version = "1.1.0"
+requires-python = ">=3.15,<4"
+dependencies = [
+    "boto3",
+    "cloudflare",
+    "requests",
+    "tenacity",
+    # Transitive dependencies. Listed explicitly because Dependabot cannot
+    # update transitive dependencies in uv.lock. Not imported directly.
+    "annotated-types",
+    "anyio",
+    "botocore",
+    "certifi",
+    "charset-normalizer",
+    "distro",
+    "h11",
+    "httpcore",
+    "httpx",
+    "idna",
+    "jmespath",
+    "pydantic",
+    "pydantic-core",
+    "python-dateutil",
+    "s3transfer",
+    "six",
+    "sniffio",
+    "typing-extensions",
+    "typing-inspection",
+    "urllib3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    # Transitive dependencies, see comment above
+    "colorama",
+    "coverage",
+    "iniconfig",
+    "packaging",
+    "pluggy",
+    "pygments",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-config --strict-markers"
+
+[tool.coverage.run]
+branch = true
+source = ["."]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "UP", "S"]
+per-file-ignores = { "tests/**/*.py" = ["S101", "S108"] }

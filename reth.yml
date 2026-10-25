@@ -1,16 +1,18 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 services:
   execution:
     restart: "unless-stopped"
     build:
       context: ./reth
+      additional_contexts:
+        ephemery: ./ephemery
       dockerfile: ${RETH_DOCKERFILE}
       args:
         - BUILD_TARGET=${RETH_SRC_BUILD_TARGET:-main}
@@ -30,6 +32,11 @@ services:
       - NETWORK=${NETWORK}
       - STATIC_DIR=${ANCIENT_DIR}
       - COMPOSE_FILE=${COMPOSE_FILE}
+      - IPV6=${IPV6:-false}
+      - HOST_IP=${HOST_IP:-}
+      - EL_P2P_PORT=${EL_P2P_PORT:-30303}
+      - RETH_SNAPSHOT=${RETH_SNAPSHOT:-}
+      - ERE_URL=${ERE_URL:-}
       # Make this RUST_LOG=${LOG_LEVEL:-info},engine=trace when requiring deep debug
       # RPC debug can be done with jsonrpsee=trace or jsonrpsee::target=trace for a specific target
       # - RUST_LOG=${LOG_LEVEL:-info},engine=trace
@@ -42,7 +49,6 @@ services:
     ports:
       - ${HOST_IP:-}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/tcp
       - ${HOST_IP:-}:${EL_P2P_PORT:-30303}:${EL_P2P_PORT:-30303}/udp
-      - ${HOST_IP:-}:${EL_P2P_PORT_2:-30304}:${EL_P2P_PORT_2:-30304}/udp
     networks:
       default:
         aliases:
@@ -62,9 +68,8 @@ services:
       - ${EL_P2P_PORT:-30303}
       - --discovery.port
       - ${EL_P2P_PORT:-30303}
-      - --enable-discv5-discovery
       - --discovery.v5.port
-      - ${EL_P2P_PORT_2:-30304}
+      - ${EL_P2P_PORT:-30303}
       - --nat
       - publicip
       - --http
@@ -87,12 +92,15 @@ services:
       - /var/lib/reth/ee-secret/jwtsecret
       - ${EL_MAX_PEER_COUNT:+--max-peers}
       - ${EL_MAX_PEER_COUNT:+${EL_MAX_PEER_COUNT}}
+      - ${MAX_BLOBS:+--builder.max-blobs}
+      - ${MAX_BLOBS:+${MAX_BLOBS}}
     labels:
       - metrics.scrape=true
       - metrics.path=/metrics
       - metrics.port=6060
       - metrics.instance=execution
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
   set-prune-marker:
     profiles: ["tools"]

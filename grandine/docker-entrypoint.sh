@@ -6,6 +6,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exec gosu gdconsensus docker-entrypoint.sh "$@"
 fi
 
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
+fi
+
 
 # Because we're oh-so-clever with + substitution and maxpeers, we may have empty args. Remove them
 __strip_empty_args() {
@@ -21,8 +26,9 @@ __strip_empty_args() {
 
 __normalize_int() {
   local v=$1
-  if [[ "${v}" =~ ^[0-9]+$ ]]; then
-    v=$((10#${v}))
+  # Strip leading zeros as text. Arithmetic would overflow on the largest boost factors
+  if [[ "${v}" =~ ^0*([0-9]+)$ ]]; then
+    v="${BASH_REMATCH[1]}"
   fi
   printf '%s' "${v}"
 }
@@ -52,8 +58,6 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/grandine/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/grandine/testnet
     cd /var/lib/grandine/testnet
@@ -63,16 +67,15 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/grandine/testnet/${config_dir}/bootstrap_nodes.yaml" | paste -sd ",")"
-  set +e
-  __network="--configuration-directory=/var/lib/grandine/testnet/${config_dir} --boot-nodes=${bootnodes}"
+  config_dir_path="/var/lib/grandine/testnet/${config_dir}"
+  __network="--configuration-directory=${config_dir_path} --network=custom"
 else
   __network="--network=${NETWORK}"
 fi
 
 case "${NODE_TYPE}" in
   archive)
-    echo "Grandine archive node without pruning"
+    echo "Grandine archive node without history pruning"
     __prune="--back-sync --archive-storage"
     ;;
   pruned)
@@ -107,46 +110,98 @@ else
   __beacon_stats=""
 fi
 
+# Adjust RIGHT after each network's Glamsterdam hardfork
+# MEV Boost implies ePBS builders only on networks that haven't forked yet
+if [[ "${MEV_BOOST}" = "true" && "${NETWORK}" =~ ^(hoodi|mainnet)$ ]]; then
+  __mev_active=1
+else
+  if [[ "${MEV_BOOST}" = "true" ]]; then
+    echo "MEV_BOOST is true, but MEV Boost is not used on ${NETWORK}. Ignoring it."
+  fi
+  __mev_active=0
+fi
+
 # Check whether we should use MEV Boost
-if [[ "${MEV_BOOST}" = "true" ]]; then
+if [[ "${__mev_active}" -eq 1 ]]; then
   __mev_boost="--builder-url ${MEV_NODE:-http://mev-boost:18550}"
   echo "MEV Boost enabled"
-  if [[ "${EMBEDDED_VC}" = "true" ]]; then
-    build_factor="$(__normalize_int "${MEV_BUILD_FACTOR}")"
+else
+  __mev_boost=""
+fi
+
+# Check whether we should use ePBS
+if [[ "${EMBEDDED_VC}" = "true" ]]; then
+  if [[ "${__mev_active}" -eq 1 || "${EPBS_BUILDERS}" = "true" ]]; then
+    if [[ "${__mev_active}" -eq 1 ]]; then
+      if [[ "${EPBS_BUILDERS}" = "false" ]]; then
+        echo "ePBS builders are meant to be disabled, but MEV Boost is true, which will enable them anyway."
+        echo "Update Eth Docker again after ${NETWORK}'s Glamsterdam hard fork to fix this."
+      else
+        echo "Update Eth Docker again after mainnet Glamsterdam hard fork, expected December 2026, to remove MEV Boost."
+      fi
+    fi
+    if [[ "${EPBS_BUILDERS}" = "true" ]]; then
+      echo "ePBS builders enabled"
+    fi
+
+    build_factor="$(__normalize_int "${EPBS_BUILD_FACTOR}")"
+    if [[ "${build_factor}" = "maxprofit" ]]; then
+      build_factor=100  # 100 means profit maximization, as in the keymanager API
+    fi
     case "${build_factor}" in
-      0)
-        __mev_boost=""
-        __mev_factor=""
-        echo "Disabled MEV Boost because MEV_BUILD_FACTOR is 0."
-        echo "WARNING: This conflicts with MEV_BOOST true. Set factor in a range of 1 to 100"
+      0|local)
+        if [[ "${__mev_active}" -eq 1 ]]; then
+          __mev_boost=""
+          __mev_factor=""
+          echo "Disabled MEV Boost because EPBS_BUILD_FACTOR is ${build_factor}."
+          echo "WARNING: This conflicts with MEV_BOOST true. Set a factor above 0, or maxprofit or always"
+        else
+          __mev_factor="--default-builder-boost-factor 0"
+          echo "Build blocks locally, use ePBS builders as fallback. EPBS_BUILD_FACTOR is ${build_factor}."
+        fi
         ;;
-      [1-9]|[1-9][0-9])
-        __mev_factor="--default-builder-boost-factor ${build_factor}"
-        echo "Enabled MEV Build Factor of ${build_factor}"
-        ;;
-      100)
+      always)
         __mev_factor="--default-builder-boost-factor 18446744073709551615"
-        echo "Always prefer MEV builder blocks, MEV_BUILD_FACTOR 100"
+        echo "Always prefer ePBS builder blocks, EPBS_BUILD_FACTOR always"
         ;;
       "")
         __mev_factor=""
         echo "Use default --default-builder-boost-factor"
         ;;
       *)
-        __mev_factor=""
-        echo "WARNING: MEV_BUILD_FACTOR has an invalid value of \"${build_factor}\""
+        if [[ "${build_factor}" =~ ^[1-9][0-9]{0,19}$ ]]; then
+          # Compare as text, bash arithmetic cannot hold uint64. Equal length makes this a numeric comparison
+          # shellcheck disable=SC2071
+          if [[ ${#build_factor} -eq 20 && "${build_factor}" > "18446744073709551615" ]]; then
+            echo "EPBS_BUILD_FACTOR ${build_factor} exceeds the 64-bit maximum, capping it to 18446744073709551615"
+            build_factor=18446744073709551615
+          fi
+          __mev_factor="--default-builder-boost-factor ${build_factor}"
+          echo "Enabled ePBS Build Factor of ${build_factor}"
+        else
+          __mev_factor=""
+          echo "WARNING: EPBS_BUILD_FACTOR has an invalid value of \"${build_factor}\""
+        fi
         ;;
     esac
+    # Adjust once Grandine supports ePBS CLI parameters, to pass them here like Prysm does
+    # Compose keeps the newlines of a multi-line EPBS_BUILDER_URLS
+    builder_urls="${EPBS_BUILDER_URLS//[[:space:]]/}"
+    if [[ -n "${builder_urls}" || -n "${EPBS_MIN_BID}" ]]; then
+      echo "Grandine does not support ePBS CLI parameters for builder URLs or minimum bid yet. Ignoring EPBS_BUILDER_URLS and EPBS_MIN_BID."
+      echo "Use \"./ethd keys set-builder\" to configure ePBS builders."
+    fi
   else
-    __mev_factor=""
+    __mev_factor="--default-builder-boost-factor 0"
+    echo "Build blocks locally, use ePBS builders as fallback"
   fi
 else
-  __mev_boost=""
   __mev_factor=""
 fi
 
 if [[ "${IPV6}" = "true" ]]; then
   echo "Configuring Grandine to listen on IPv6 ports"
+  echo "IPv6 ENR will be auto-discovered. Please make sure the v6 P2P ports are reachable \"from Internet\""
   __ipv6="--listen-address-ipv6 :: --libp2p-port-ipv6 ${CL_P2P_PORT:-9000} --discovery-port-ipv6 ${CL_P2P_PORT:-9000} \
 --quic-port-ipv6 ${CL_QUIC_PORT:-9001}"
 else
@@ -165,14 +220,19 @@ fi
 # Web3signer URL
 if [[ "${EMBEDDED_VC}" = "true" && "${WEB3SIGNER}" = "true" ]]; then
   __w3s_url="--web3signer-urls ${W3S_NODE}"
+  __w3s_wait=300
+  __w3s_deadline=$(( SECONDS + __w3s_wait ))
   while true; do
-    if curl -s -m 5 "${W3S_NODE}" &> /dev/null; then
-        echo "web3signer is up, starting Grandine"
-        break
-    else
-        echo "Waiting for web3signer to be reachable..."
-        sleep 5
+    if curl -sf -m 5 "${W3S_NODE}/upcheck" &> /dev/null; then
+      echo "Web3signer is up, starting Grandine"
+      break
     fi
+    if (( SECONDS >= __w3s_deadline )); then
+      echo "Web3signer at ${W3S_NODE} is not reachable after ${__w3s_wait} seconds, starting Grandine anyway"
+      break
+    fi
+    echo "Waiting for Web3signer to be reachable..."
+    sleep 5
   done
 else
   __w3s_url=""
@@ -185,19 +245,37 @@ if [[ "${COMPOSE_FILE}" =~ (grafana\.yml|grafana-rootless\.yml) ]]; then
   export OTEL_TRACES_SAMPLER=parentbased_traceidratio
   export OTEL_TRACES_SAMPLER_ARG=0.01
   export OTEL_EXPORTER_OTLP_INSECURE=true
+  export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
 else
   __trace=""
+fi
+
+if [[ "${EMBEDDED_VC}" = "true" && "${DEFAULT_GRAFFITI}" != "true" ]]; then
+  __graffiti_args=(--graffiti "${GRAFFITI}")
+else
+  __graffiti_args=()
 fi
 
 __strip_empty_args "$@"
 set -- "${__args[@]}"
 
-if [[ "${DEFAULT_GRAFFITI}" = "true" ]]; then
+i=0
+while true; do
+  if [ -f /var/lib/grandine/ee-secret/jwtsecret ]; then
+    break
+  else
+    if [[ "$i" -eq 5 ]]; then
+      echo "Did not see the JWT secret file six times in a row. This is either a bug or a very slow execution layer client startup."
+      echo "Starting consensus layer client anyway: It may fail."
+      break
+    else
+      echo "Waiting for JWT secret file to be created by execution layer client"
+      sleep 5
+      ((++i))
+    fi
+  fi
+done
+
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__mev_factor} ${__checkpoint_sync} ${__prune} ${__beacon_stats} ${__ipv6} ${__doppel} ${__trace} ${CL_EXTRAS} ${VC_EXTRAS}
-else
-# Word splitting is desired for the command line parameters
-# shellcheck disable=SC2086
-  exec "$@" ${__network} ${__w3s_url} ${__mev_boost} ${__mev_factor} ${__checkpoint_sync} ${__prune} ${__beacon_stats} ${__ipv6} ${__doppel} --graffiti "${GRAFFITI}" ${__trace} ${CL_EXTRAS} ${VC_EXTRAS}
-fi
+exec "$@" ${__network} ${__w3s_url} "${__graffiti_args[@]}" ${__mev_boost} ${__mev_factor} ${__checkpoint_sync} ${__prune} ${__beacon_stats} ${__ipv6} ${__doppel} ${__trace} ${CL_EXTRAS} ${VC_EXTRAS}

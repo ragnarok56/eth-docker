@@ -1,16 +1,18 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 services:
   execution:
     restart: "unless-stopped"
     build:
       context: ./nimbus-el
+      additional_contexts:
+        ephemery: ./ephemery
       dockerfile: ${NIMEL_DOCKERFILE}
       args:
         - BUILD_TARGET=${NIMEL_SRC_BUILD_TARGET:-master}
@@ -27,8 +29,9 @@ services:
       - EL_EXTRAS=${EL_EXTRAS:-}
       - NODE_TYPE=${EL_NODE_TYPE:-pre-merge-expiry}
       - NETWORK=${NETWORK}
-      - ERA_URL=${ERA_URL:-}
-      - MAX_BLOBS=${MAX_BLOBS:-}
+      - ERE_URL=${ERE_URL:-}
+      - IPV6=${IPV6:-false}
+      - HOST_IP=${HOST_IP:-}
     volumes:
       - nimbus-el-data:/var/lib/nimbus
       - /etc/localtime:/etc/localtime:ro
@@ -45,14 +48,14 @@ services:
     <<: *logging
     entrypoint:
       - docker-entrypoint.sh
-      - nimbus_execution_client
+      - nimbus
+      - executionClient
       - --rpc
       - --http-address=0.0.0.0
       - --http-port=${EL_RPC_PORT:-8545}
       - --ws
       - --data-dir=/var/lib/nimbus
       - --tcp-port=${EL_P2P_PORT:-30303}
-      - --discovery=V5
       - --metrics
       - --metrics-port=6060
       - --metrics-address=0.0.0.0
@@ -62,6 +65,7 @@ services:
       - --engine-api-address=0.0.0.0
       - --engine-api-ws
       - ${EL_MAX_PEER_COUNT:+--max-peers=${EL_MAX_PEER_COUNT}}
+      - ${MAX_BLOBS:+--max-blobs=${MAX_BLOBS}}
       - --log-level=${LOG_LEVEL}
     labels:
       - metrics.scrape=true
@@ -69,6 +73,7 @@ services:
       - metrics.port=6060
       - metrics.instance=execution
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
 volumes:
   nimbus-el-data:

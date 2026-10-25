@@ -1,10 +1,10 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 services:
   execution:
@@ -14,7 +14,7 @@ services:
       context: ./besu
       dockerfile: ${BESU_DOCKERFILE}
       args:
-        - BUILD_TARGET=${BESU_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+        - BUILD_TARGET=${BESU_SRC_BUILD_TARGET:-$$(git describe --tags $$(git rev-list --tags --max-count=1))}
         - SRC_REPO=${BESU_SRC_REPO:-https://github.com/hyperledger/besu}
         - DOCKER_TAG=${BESU_DOCKER_TAG:-latest}
         - DOCKER_REPO=${BESU_DOCKER_REPO:-hyperledger/besu}
@@ -22,12 +22,15 @@ services:
     pull_policy: never
     user: besu
     environment:
-      - JAVA_OPTS=${BESU_HEAP:--Xmx5g}
+      - JAVA_OPTS=${BESU_HEAP:--Xmx7g}
       - JWT_SECRET=${JWT_SECRET:-}
       - EL_EXTRAS=${EL_EXTRAS:-}
       - NODE_TYPE=${EL_NODE_TYPE:-pre-merge-expiry}
       - NETWORK=${NETWORK}
       - IPV6=${IPV6:-false}
+      - HOST_IP=${HOST_IP:-}
+      - EL_P2P_PORT=${EL_P2P_PORT:-30303}
+      - ERE_URL=${ERE_URL}
       - COMPOSE_FILE=${COMPOSE_FILE}
     volumes:
       - besu-el-data:/var/lib/besu
@@ -64,6 +67,8 @@ services:
       - ${EL_WS_PORT:-8546}
       - ${EL_MAX_PEER_COUNT:+--max-peers}
       - ${EL_MAX_PEER_COUNT:+${EL_MAX_PEER_COUNT}}
+      - ${MAX_BLOBS:+--max-blobs-per-block}
+      - ${MAX_BLOBS:+${MAX_BLOBS}}
       - --host-allowlist=*
       - --engine-host-allowlist=*
       - --engine-jwt-secret=/var/lib/besu/ee-secret/jwtsecret
@@ -82,6 +87,7 @@ services:
       - metrics.port=6060
       - metrics.instance=execution
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
   set-prune-marker:
     profiles: ["tools"]

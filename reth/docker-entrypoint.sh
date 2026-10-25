@@ -6,6 +6,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
   exec gosu reth "${BASH_SOURCE[0]}" "$@"
 fi
 
+if [[ "${IPV6:-false}" = "true" && -n "${HOST_IP:-}" && "${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "WARNING: IPV6 is true, but HOST_IP is set to the IPv4 address ${HOST_IP}."
+  echo "IPv6 traffic should work outbound, but cannot work inbound, as P2P ports are only published on ${HOST_IP}."
+fi
+
 
 # Because we're oh-so-clever with + substitution and maxpeers, we may have empty args. Remove them
 __strip_empty_args() {
@@ -39,14 +44,30 @@ if [[ -O /var/lib/reth/ee-secret/jwtsecret ]]; then
   chmod 666 /var/lib/reth/ee-secret/jwtsecret
 fi
 
-if [[ "${NETWORK}" =~ ^https?:// ]]; then
+config_dir_path=""
+if [[ "${NETWORK}" = "ephemery" ]]; then
+  config_dir_path="$(ephemery-config.sh /var/lib/reth/testnet/ephemery)"
+  # A new iteration has a new genesis, and the chain data of the old one is for a dead chain.
+  # ee-secret is the JWT secret volume and testnet holds the Ephemery configs; both stay.
+  __iteration="$(basename "$(dirname "${config_dir_path}")")"
+  if [[ -f /var/lib/reth/ephemery-iteration ]]; then
+    __old_iteration="$(cat /var/lib/reth/ephemery-iteration)"
+    if [[ ! "${__old_iteration}" = "${__iteration}" ]]; then
+      echo "Ephemery reset from ${__old_iteration} to ${__iteration}, removing the old chain data"
+      find /var/lib/reth -mindepth 1 -maxdepth 1 ! -name ee-secret ! -name testnet \
+        ! -name ephemery-iteration -exec rm -rf {} +
+      if [[ -n "${STATIC_DIR}" && ! "${STATIC_DIR}" = ".nada" ]]; then
+        find /var/lib/static -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+      fi
+    fi
+  fi
+  echo "${__iteration}" > /var/lib/reth/ephemery-iteration
+elif [[ "${NETWORK}" =~ ^https?:// ]]; then
   echo "Custom testnet at ${NETWORK}"
   repo=$(awk -F'/tree/' '{print $1}' <<< "${NETWORK}")
   branch=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f1)
   config_dir=$(awk -F'/tree/' '{print $2}' <<< "${NETWORK}" | cut -d'/' -f2-)
   echo "This appears to be the ${repo} repo, branch ${branch} and config directory ${config_dir}."
-  # For want of something more amazing, let's just fail if git fails to pull this
-  set -e
   if [[ ! -d "/var/lib/reth/testnet/${config_dir}" ]]; then
     mkdir -p /var/lib/reth/testnet
     cd /var/lib/reth/testnet
@@ -56,9 +77,25 @@ if [[ "${NETWORK}" =~ ^https?:// ]]; then
     echo "${config_dir}" > .git/info/sparse-checkout
     git pull origin "${branch}"
   fi
-  bootnodes="$(awk -F'- ' '!/^#/ && NF>1 {print $2}' "/var/lib/reth/testnet/${config_dir}/enodes.yaml" | paste -sd ",")"
-  set +e
-  __network="--chain=/var/lib/reth/testnet/${config_dir}/genesis.json --bootnodes=${bootnodes}"
+  config_dir_path="/var/lib/reth/testnet/${config_dir}"
+fi
+if [[ -n "${config_dir_path}" ]]; then
+  if [[ -f "${config_dir_path}/enodes.txt" ]]; then
+    bootnodes="$(paste -sd, "${config_dir_path}/enodes.txt")"
+  else
+    bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/enodes.yaml")"
+  fi
+  if [[ -f "${config_dir_path}/bootstrap_nodes.txt" ]]; then
+    v5_bootnodes="$(paste -sd, "${config_dir_path}/bootstrap_nodes.txt")"
+  else
+    v5_bootnodes="$(awk -F'- ' '!/^#/ && NF>1 { split($2, a, /[ \t#]/); if (a[1] != "") printf (first++ ? "," : "") a[1] } END { print "" }' "${config_dir_path}/bootstrap_nodes.yaml")"
+  fi
+  if [[ -n "${bootnodes}" && -n "${v5_bootnodes}" ]]; then
+    bootnodes+=",${v5_bootnodes}"
+  elif [[ -n "${v5_bootnodes}" ]]; then
+    bootnodes="${v5_bootnodes}"
+  fi
+  __network="--chain=${config_dir_path}/genesis.json --bootnodes=${bootnodes}"
 else
   __network="--chain ${NETWORK}"
 fi
@@ -98,13 +135,16 @@ case "${NODE_TYPE}" in
   archive)
     echo "Reth archive node without pruning"
     __prune=""
+    __snap="--archive"
     ;;
   full)
     echo "Reth full node without history expiry"
-    prune+=" --prune.receipts.before 0"
+    __prune+=" --prune.receipts.before 0"
+    __snap="--with-txs-since 0 --with-receipts-since 0 --with-state-history-distance 10064"
     ;;
   pre-merge-expiry)
-    prune+=" --prune.transactionlookup.distance 10064"
+    __prune+=" --prune.transactionlookup.distance 10064"
+    __snap="--with-txs-since 15537394 --with-receipts-since 15537394 --with-state-history-distance 10064"
     case ${NETWORK} in
       mainnet|sepolia)
         echo "Reth minimal node with pre-merge history expiry"
@@ -116,31 +156,67 @@ case "${NODE_TYPE}" in
         ;;
     esac
     ;;
-  pre-cancun-expiry)
-    prune+=" --prune.transactionlookup.distance 10064"
+  pre-prague-expiry)
+    __prune+=" --prune.transactionlookup.distance 10064"
+    __snap="--with-txs-since 22431084 --with-receipts-since 22431084 --with-state-history-distance 10064"
     case "${NETWORK}" in
       mainnet)
-        echo "Reth minimal node with pre-Cancun history expiry"
-        __prune+=" --prune.bodies.before 19426587 --prune.receipts.before 19426587"
+        echo "Reth minimal node with pre-Prague history expiry"
+        __prune+=" --prune.bodies.before 22431084 --prune.receipts.before 22431084"
         ;;
       sepolia)
-        echo "Reth minimal node with pre-Cancun history expiry"
-        __prune+=" --prune.bodies.before 5187023 --prune.receipts.before 5187023"
+        echo "Reth minimal node with pre-Prague history expiry"
+        __prune+=" --prune.bodies.before 7836331 --prune.receipts.before 7836331"
+        ;;
+      hoodi)
+        echo "Reth minimal node with pre-Prague history expiry"
+        __prune+=" --prune.bodies.before 60412 --prune.receipts.before 60412"
         ;;
       *)
-        echo "There is no pre-Cancun history for ${NETWORK} network, \"pre-cancun-expiry\" has no effect."
+        echo "There is no pre-Prague history for ${NETWORK} network, \"pre-prague-expiry\" has no effect."
+        __prune+=" --prune.receipts.before 0"
+        ;;
+    esac
+    ;;
+  stakewise-expiry)
+    __prune+=" --prune.transactionlookup.distance 10064"
+    __snap="--with-txs-since 25900000 --with-receipts-since 25900000 --with-state-history-distance 10064"
+    case "${NETWORK}" in
+      mainnet)
+        echo "Reth minimal node with Stakewise history expiry"
+        __prune+=" --prune.bodies.before 25900000 --prune.receipts.before 25900000"
+        ;;
+      hoodi)
+        echo "Reth minimal node with Stakewise history expiry"
+        __prune+=" --prune.bodies.before 3580000 --prune.receipts.before 3580000"
+        ;;
+      *)
+        echo "There is no Stakewise expiry config for ${NETWORK} network, \"stakewise-expiry\" has no effect."
         __prune+=" --prune.receipts.before 0"
         ;;
     esac
     ;;
   rolling-expiry)
-    echo "Reth minimal node with rolling history expiry, keeps 1 year."
-    # 365 days = 82125 epochs = 2628000 slots / blocks
-    __prune+=" --prune.transactionlookup.distance 10064 --prune.bodies.distance 2628000 --prune.receipts.distance 2628000"
+    echo "Reth minimal node with rolling history expiry, keeps ~5 months"
+    # 33_024 epochs = 1056768 slots / blocks
+    __prune+=" --prune.transactionlookup.distance 10064 --prune.bodies.distance 1056768 --prune.receipts.distance 1056768"
+    __snap="--with-txs-distance 1056768  --with-receipts-distance 1056768 --with-state-history-distance 10064"
     ;;
   aggressive-expiry)
     echo "Reth minimal node with aggressive expiry"
     __prune="--minimal"
+    __snap="--minimal"
+    ;;
+  custom)
+    echo "Reth default block retention; adjust as desired by \"EL_EXTRAS\" in \".env\""
+    __prune=""
+    __snap=""
+    ;;
+  use-cl-zkproofs)
+    echo "ERROR: The node type ${NODE_TYPE} is designed to not run an execution layer client"
+    echo "Remove \"reth.yml\" from configuration, or change the node type"
+    sleep 30
+    exit 1
     ;;
   *)
     echo "ERROR: The node type ${NODE_TYPE} is not known to Eth Docker's Reth implementation."
@@ -149,24 +225,42 @@ case "${NODE_TYPE}" in
     ;;
 esac
 
+# Adjust __snap to be empty if user doesn't want snapshots, or left as-is if they provided custom parameters. If "true" and we're not on mainnet, disable snapshots
+if [[ "${RETH_SNAPSHOT}" = "false" || -z "${RETH_SNAPSHOT}" ]]; then
+  __snap=""
+elif [[ "${RETH_SNAPSHOT}" != "true" ]]; then
+  __snap="${RETH_SNAPSHOT}"
+elif [[ "${NETWORK}" != "mainnet" ]]; then
+  __snap=""
+fi
+
 if [[ -n "${__prune}" ]]; then
   echo "Pruning parameters: ${__prune}"
 fi
 
 if [[ -f /var/lib/reth/repair-trie ]]; then
-  if [[ "${NETWORK}" =~ ^https?:// ]]; then
+  if [[ -n "${config_dir_path}" ]]; then
     echo "Can't repair database on custom network"
-    rm "var/lib/reth/repair-trie"
+    rm -f /var/lib/reth/repair-trie
   else
-    rm "var/lib/reth/repair-trie"  # Remove first in case this panics
+    rm -f /var/lib/reth/repair-trie  # Remove first in case this panics
     echo "Running Reth database trie repair. This may take up to 2 hours"
 # shellcheck disable=SC2086
-    reth db --chain "${NETWORK}" --datadir /var/lib/reth ${__static} repair-trie
+    exec reth db --chain "${NETWORK}" --datadir /var/lib/reth ${__static} repair-trie
   fi
 fi
 
-__strip_empty_args "$@"
-set -- "${__args[@]}"
+if [[ -f /var/lib/reth/migrate-v2 ]]; then
+  if [[ -n "${config_dir_path}" ]]; then
+    echo "Can't migrate database on custom network"
+    rm -f /var/lib/reth/migrate-v2
+  else
+    rm -f /var/lib/reth/migrate-v2  # Remove first in case this panics
+    echo "Running Reth database migration. This may take up to 24 hours for an archive node."
+# shellcheck disable=SC2086
+    exec reth db --chain "${NETWORK}" --datadir /var/lib/reth ${__static} migrate-v2
+  fi
+fi
 
 # Traces
 if [[ "${COMPOSE_FILE}" =~ (grafana\.yml|grafana-rootless\.yml) ]]; then
@@ -176,6 +270,40 @@ if [[ "${COMPOSE_FILE}" =~ (grafana\.yml|grafana-rootless\.yml) ]]; then
 else
   __trace=""
 fi
+
+# IPV6
+if [[ "${IPV6:-false}" = "true" ]]; then
+  echo "Configuring Reth's discv5 for IPv6 advertisements"
+  __ipv6="--addr :: --discovery.v5.addr 0.0.0.0 --discovery.v5.port.ipv6 ${EL_P2P_PORT}"
+else
+  __ipv6=""
+fi
+
+# Download snapshot if this is a fresh sync
+if [[ -n "${__snap}" && ! -d /var/lib/reth/db ]]; then
+  if [[ -n "${ERE_URL}" ]]; then
+    echo "WARNING: Both EraE URL ${ERE_URL} and Reth snapshot URL found. Preferring snapshot."
+  fi
+  echo "Downloading Reth snapshot with parameters: ${__snap}"
+# Word splitting is desired for the command line parameters
+# shellcheck disable=SC2086
+  exec reth download --chain "${NETWORK}" --datadir /var/lib/reth ${__static} ${__snap}
+fi
+
+# EraE import
+if [[ -n "${ERE_URL}" && ! -f /var/lib/reth/ere-import-complete && -z "${config_dir_path}" ]]; then  # Fresh sync and named network
+  if [[ "${NODE_TYPE}" =~ ^(full|archive|custom)$ ]]; then
+    echo "Starting EraE history import from ${ERE_URL}"
+# shellcheck disable=SC2086
+    reth import-era --datadir /var/lib/reth ${__static} ${__network} --url "${ERE_URL}"
+    touch /var/lib/reth/ere-import-complete
+  else
+    echo "Reth is neither a full nor archive node, it uses ${NODE_TYPE}. Skipping EraE import."
+  fi
+fi
+
+__strip_empty_args "$@"
+set -- "${__args[@]}"
 
 if [[ -f /var/lib/reth/prune-marker ]]; then
   rm -f /var/lib/reth/prune-marker
@@ -189,5 +317,5 @@ if [[ -f /var/lib/reth/prune-marker ]]; then
 else
 # Word splitting is desired for the command line parameters
 # shellcheck disable=SC2086
-  exec "$@" ${__network} ${__verbosity} ${__static} ${__prune} ${__trace} ${EL_EXTRAS}
+  exec "$@" ${__network} ${__verbosity} ${__static} ${__prune} ${__trace} ${__ipv6} ${EL_EXTRAS}
 fi

@@ -20,9 +20,33 @@ __pubkey=""
 __limit=0
 __graffiti=""
 __address=""
+__builder_urls=""
+__min_bid=""
+__min_bid_gwei=""
+__boost_factor=""
+__boost_factor_value=""
+__pubkey_selector=""
+__pubkeys=()
+__json_body=""
+__json_out=0
+# "always use the builder" in the keymanager API. EPBS_BUILD_FACTOR in .env uses the same scale,
+# where 100 means profit maximization.
+__max_boost_factor=18446744073709551615
 __pass=0
 __eth2_val_tools=0
 __non_interactive=0
+
+
+# Not all clients return .message like they should.
+# This is called as __print_jq_message "<message>" "<jq_query>"
+__print_jq_message() {
+  local message=$1
+  local jq_query=$2
+
+  if ! echo "${message}" | jq -er "${jq_query} // empty" 2>/dev/null; then
+    echo "${message}"
+  fi
+}
 
 
 __call_api() {
@@ -50,7 +74,11 @@ else
   if [[ "${__debug}" -eq 1 ]]; then
     echo "Called ${__api_container}:${__api_port}/${__api_path} with method ${__http_method} and the following data"
     if [[ -n "${__api_data}" ]]; then
-      echo "${__api_data}"
+      if [[ "${__api_data}" =~ ^@.+ ]]; then
+        cat "${__api_data#@}"
+      else
+        echo "${__api_data}"
+      fi
     else
       echo "This was a call without data"
     fi
@@ -80,19 +108,35 @@ else
 
 __call_cl_api() {
   local exitstatus
+  local nodes
+  local node
+  local node_reachable=0
+
+  nodes=$(echo "${CL_NODE}" | tr ',' ' ')
+  for node in ${nodes}; do
+    if curl -s -m 5 -o /dev/null -w "%{http_code}" "${node}/eth/v1/node/health" | grep -q "^[23]"; then
+      node_reachable=1
+      break
+    fi
+  done
+
+  if [[ "${node_reachable}" -eq 0 ]]; then
+    echo "No consensus client node is reachable via any URL in ${CL_NODE}"
+    exit 1
+  fi
 
   set +e
   if [[ -z "${__api_data}" ]]; then
     __code=$(curl -m 60 -s --show-error -o /tmp/result.txt -w "%{http_code}" -X "${__http_method}" -H "Accept: application/json" \
-        "${CL_NODE}"/"${__api_path}")
+        "${node}"/"${__api_path}")
   else
     __code=$(curl -m 60 -s --show-error -o /tmp/result.txt -w "%{http_code}" -X "${__http_method}" -H "Accept: application/json" -H "Content-Type: application/json" \
-        --data "${__api_data}" "${CL_NODE}"/"${__api_path}")
+        --data "${__api_data}" "${node}"/"${__api_path}")
   fi
   exitstatus=$?
   if [[ "${exitstatus}" -ne 0 ]]; then
     echo "Error encountered while trying to call the consensus client REST API via curl."
-    echo "Please make sure the ${CL_NODE} URL is reachable."
+    echo "Please make sure the ${node} URL is reachable."
     echo "Error code ${exitstatus}"
     exit ${exitstatus}
   fi
@@ -194,83 +238,121 @@ get-grandine-wallet() {
 }
 
 
+# Summarize a command that ran over the pubkeys array, and exit 1 if any key failed
+# This is called as __pubkeys_summary "<what was done>" <succeeded> <failed>, with an empty
+# "<what was done>" for no summary line
+__pubkeys_summary() {
+  if [[ -n "$1" && "${#__pubkeys[@]}" -gt 1 ]]; then
+    echo "$1 for $2 of ${#__pubkeys[@]} validators."
+  fi
+  if [[ "$3" -gt 0 ]]; then
+    exit 1
+  fi
+  exit 0
+}
+
+
 recipient-get() {
-  __check_pubkey "${__pubkey}"
+  local failed=0
+
+  __pubkeys_to_array "${__pubkey_selector}" "get the fee recipient for"
   __get_token
-  __api_path="eth/v1/validator/${__pubkey}/feerecipient"
-  __api_data=""
-  __http_method=GET
-  __call_api
-  case "${__code}" in
-    200) echo "The fee recipient for the validator with public key ${__pubkey} is:"; echo "${__result}" | jq -r '.data.ethaddress'; exit 0;;
-    401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-    403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    404) echo "Path not found error. Was that the right pubkey? Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
-  esac
+  for __pubkey in "${__pubkeys[@]}"; do
+    __api_path="eth/v1/validator/${__pubkey}/feerecipient"
+    __api_data=""
+    __http_method=GET
+    __call_api
+    case "${__code}" in
+      200) echo "The fee recipient for the validator with public key ${__pubkey} is:"; echo "${__result}" | jq -r '.data.ethaddress';;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      404) echo "Path not found error. Was that the right pubkey ${__pubkey}? Error: $(__print_jq_message "${__result}" '.message')"; (( failed+=1 ));;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  __pubkeys_summary "" 0 "${failed}"
 }
 
 
 recipient-set() {
-  __check_pubkey "${__pubkey}"
+  local updated=0
+  local failed=0
+
+  __pubkeys_to_array "${__pubkey_selector}" "set the fee recipient for"
   __check_address "${__address}"
   __get_token
-  __api_path="eth/v1/validator/${__pubkey}/feerecipient"
-  __api_data="{\"ethaddress\": \"${__address}\" }"
-  __http_method=POST
-  __call_api
-  case "${__code}" in
-    202) echo "The fee recipient for the validator with public key ${__pubkey} was updated."; exit 0;;
-    400) echo "The pubkey or address was formatted wrong. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-    403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    404) echo "Path not found error. Was that the right pubkey? Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
-  esac
+  for __pubkey in "${__pubkeys[@]}"; do
+    __api_path="eth/v1/validator/${__pubkey}/feerecipient"
+    __api_data="{\"ethaddress\": \"${__address}\" }"
+    __http_method=POST
+    __call_api
+    case "${__code}" in
+      202) echo "The fee recipient for the validator with public key ${__pubkey} was updated."; (( updated+=1 ));;
+      400) echo "The pubkey or address was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; (( failed+=1 ));;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      404) echo "Path not found error. Was that the right pubkey ${__pubkey}? Error: $(__print_jq_message "${__result}" '.message')"; (( failed+=1 ));;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  __pubkeys_summary "Updated the fee recipient" "${updated}" "${failed}"
 }
 
 
 recipient-delete() {
-  __check_pubkey "${__pubkey}"
+  local deleted=0
+
+  __pubkeys_to_array "${__pubkey_selector}" "delete the fee recipient for"
   __get_token
-  __api_path="eth/v1/validator/${__pubkey}/feerecipient"
-  __api_data=""
-  __http_method=DELETE
-  __call_api
-  case "${__code}" in
-    204) echo "The fee recipient for the validator with public key ${__pubkey} was set back to default."; exit 0;;
-    401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-    403) echo "A fee recipient was found, but cannot be deleted. It may be in a configuration file. Message: $(echo "${__result}" | jq -r '.message')"; exit 0;;
-    404) echo "The key was not found on the server, nothing to delete. Message: $(echo "${__result}" | jq -r '.message')"; exit 0;;
-    500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
-  esac
+  for __pubkey in "${__pubkeys[@]}"; do
+    __api_path="eth/v1/validator/${__pubkey}/feerecipient"
+    __api_data=""
+    __http_method=DELETE
+    __call_api
+    case "${__code}" in
+      204) echo "The fee recipient for the validator with public key ${__pubkey} was set back to default."; (( deleted+=1 ));;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "A fee recipient was found for ${__pubkey}, but cannot be deleted. It may be in a configuration file. Message: $(__print_jq_message "${__result}" '.message')";;
+      404) echo "The key ${__pubkey} was not found on the server, nothing to delete. Message: $(__print_jq_message "${__result}" '.message')";;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  __pubkeys_summary "Set the fee recipient back to default" "${deleted}" 0
 }
 
 
 gas-get() {
-  __check_pubkey "${__pubkey}"
+  local failed=0
+
+  __pubkeys_to_array "${__pubkey_selector}" "get the gas limit for"
   __get_token
-  __api_path="eth/v1/validator/${__pubkey}/gas_limit"
-  __api_data=""
-  __http_method=GET
-  __call_api
-  case "${__code}" in
-    200) echo "The execution gas limit for the validator with public key ${__pubkey} is:"; echo "${__result}" | jq -r '.data.gas_limit'; exit 0;;
-    400) echo "The pubkey was formatted wrong. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-    403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    404) echo "Path not found error. Was that the right pubkey? Error: $(echo "${__result}" | jq -r '.message')"; exit 0;;
-    500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
-  esac
+  for __pubkey in "${__pubkeys[@]}"; do
+    __api_path="eth/v1/validator/${__pubkey}/gas_limit"
+    __api_data=""
+    __http_method=GET
+    __call_api
+    case "${__code}" in
+      200) echo "The execution gas limit for the validator with public key ${__pubkey} is:"; echo "${__result}" | jq -r '.data.gas_limit';;
+      400) echo "The pubkey was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; (( failed+=1 ));;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      404) echo "Path not found error. Was that the right pubkey ${__pubkey}? Error: $(__print_jq_message "${__result}" '.message')";;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  __pubkeys_summary "" 0 "${failed}"
 }
 
 
 gas-set() {
-  __check_pubkey "${__pubkey}"
+  local updated=0
+  local failed=0
+
+  __pubkeys_to_array "${__pubkey_selector}" "set the gas limit for"
   if [[ -z "${__limit}" ]]; then
     echo "Please specify a gas limit"
     exit 0
@@ -280,62 +362,79 @@ gas-set() {
     exit 0
   fi
   __get_token
-  __api_path="eth/v1/validator/${__pubkey}/gas_limit"
-  __api_data="{\"gas_limit\": \"${__limit}\" }"
-  __http_method=POST
-  __call_api
-  case "${__code}" in
-    202) echo "The gas limit for the validator with public key ${__pubkey} was updated."; exit 0;;
-    400) echo "The pubkey or limit was formatted wrong. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-    403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    404) echo "Path not found error. Was that the right pubkey? Error: $(echo "${__result}" | jq -r '.message')"; exit 0;;
-    500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
-  esac
+  for __pubkey in "${__pubkeys[@]}"; do
+    __api_path="eth/v1/validator/${__pubkey}/gas_limit"
+    __api_data="{\"gas_limit\": \"${__limit}\" }"
+    __http_method=POST
+    __call_api
+    case "${__code}" in
+      202) echo "The gas limit for the validator with public key ${__pubkey} was updated."; (( updated+=1 ));;
+      400) echo "The pubkey or limit was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; (( failed+=1 ));;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      404) echo "Path not found error. Was that the right pubkey ${__pubkey}? Error: $(__print_jq_message "${__result}" '.message')";;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  __pubkeys_summary "Updated the gas limit" "${updated}" "${failed}"
 }
 
 
 gas-delete() {
-  __check_pubkey "${__pubkey}"
+  local deleted=0
+  local failed=0
+
+  __pubkeys_to_array "${__pubkey_selector}" "delete the gas limit for"
   __get_token
-  __api_path="eth/v1/validator/${__pubkey}/gas_limit"
-  __api_data=""
-  __http_method=DELETE
-  __call_api
-  case "${__code}" in
-    204) echo "The gas limit for the validator with public key ${__pubkey} was set back to default."; exit 0;;
-    400) echo "The pubkey was formatted wrong. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-    403) echo "A gas limit was found, but cannot be deleted. It may be in a configuration file. Message: $(echo "${__result}" | jq -r '.message')"; exit 0;;
-    404) echo "The key was not found on the server, nothing to delete. Message: $(echo "${__result}" | jq -r '.message')"; exit 0;;
-    500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
-  esac
+  for __pubkey in "${__pubkeys[@]}"; do
+    __api_path="eth/v1/validator/${__pubkey}/gas_limit"
+    __api_data=""
+    __http_method=DELETE
+    __call_api
+    case "${__code}" in
+      204) echo "The gas limit for the validator with public key ${__pubkey} was set back to default."; (( deleted+=1 ));;
+      400) echo "The pubkey was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; (( failed+=1 ));;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "A gas limit was found for ${__pubkey}, but cannot be deleted. It may be in a configuration file. Message: $(__print_jq_message "${__result}" '.message')";;
+      404) echo "The key ${__pubkey} was not found on the server, nothing to delete. Message: $(__print_jq_message "${__result}" '.message')";;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  __pubkeys_summary "Set the gas limit back to default" "${deleted}" "${failed}"
 }
 
 
 graffiti-get() {
-  __check_pubkey "${__pubkey}"
+  local failed=0
+
+  __pubkeys_to_array "${__pubkey_selector}" "get the graffiti for"
   __get_token
-  __api_path="eth/v1/validator/${__pubkey}/graffiti"
-  __api_data=""
-  __http_method=GET
-  __call_api
-  case "${__code}" in
-    200) echo "The graffiti for the validator with public key ${__pubkey} is:"; echo "${__result}" | jq -r '.data.graffiti'; exit 0;;
-    400) echo "The pubkey was formatted wrong. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-    403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    404) echo "Path not found error. Was that the right pubkey? Error: $(echo "${__result}" | jq -r '.message')"; exit 0;;
-    500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
-  esac
+  for __pubkey in "${__pubkeys[@]}"; do
+    __api_path="eth/v1/validator/${__pubkey}/graffiti"
+    __api_data=""
+    __http_method=GET
+    __call_api
+    case "${__code}" in
+      200) echo "The graffiti for the validator with public key ${__pubkey} is:"; echo "${__result}" | jq -r '.data.graffiti';;
+      400) echo "The pubkey was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; (( failed+=1 ));;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      404) echo "Path not found error. Was that the right pubkey ${__pubkey}? Error: $(__print_jq_message "${__result}" '.message')";;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  __pubkeys_summary "" 0 "${failed}"
 }
 
 
 graffiti-set() {
-  __check_pubkey "${__pubkey}"
+  local updated=0
+  local failed=0
+
+  __pubkeys_to_array "${__pubkey_selector}" "set the graffiti for"
   if [[ -z "${__graffiti}" ]]; then
     echo "Please specify a graffiti string"
     exit 0
@@ -345,61 +444,69 @@ graffiti-set() {
     exit 0
   fi
   __get_token
-  __api_path="eth/v1/validator/${__pubkey}/graffiti"
-  __api_data="{\"graffiti\": \"${__graffiti}\" }"
-  __http_method=POST
-  __call_api
-  case "${__code}" in
-    202) echo "The graffiti for the validator with public key ${__pubkey} was updated."; exit 0;;
-    400) echo "The pubkey or limit was formatted wrong. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-    403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    404) echo "Path not found error. Was that the right pubkey? Error: $(echo "${__result}" | jq -r '.message')"; exit 0;;
-    500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
-  esac
+  for __pubkey in "${__pubkeys[@]}"; do
+    __api_path="eth/v1/validator/${__pubkey}/graffiti"
+    __api_data="{\"graffiti\": \"${__graffiti}\" }"
+    __http_method=POST
+    __call_api
+    case "${__code}" in
+      202) echo "The graffiti for the validator with public key ${__pubkey} was updated."; (( updated+=1 ));;
+      400) echo "The pubkey or graffiti was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; (( failed+=1 ));;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      404) echo "Path not found error. Was that the right pubkey ${__pubkey}? Error: $(__print_jq_message "${__result}" '.message')";;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  __pubkeys_summary "Updated the graffiti" "${updated}" "${failed}"
 }
 
 
 graffiti-delete() {
-  __check_pubkey "${__pubkey}"
+  local deleted=0
+  local failed=0
+
+  __pubkeys_to_array "${__pubkey_selector}" "delete the graffiti for"
   __get_token
-  __api_path="eth/v1/validator/${__pubkey}/graffiti"
-  __api_data=""
-  __http_method=DELETE
-  __call_api
-  case "${__code}" in
-    204) echo "The graffiti for the validator with public key ${__pubkey} was set back to default."; exit 0;;
-    400) echo "The pubkey was formatted wrong. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-    403) echo "A graffiti was found, but cannot be deleted. It may be in a configuration file. Message: $(echo "${__result}" | jq -r '.message')"; exit 0;;
-    404) echo "The key was not found on the server, nothing to delete. Message: $(echo "${__result}" | jq -r '.message')"; exit 0;;
-    500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
-  esac
+  for __pubkey in "${__pubkeys[@]}"; do
+    __api_path="eth/v1/validator/${__pubkey}/graffiti"
+    __api_data=""
+    __http_method=DELETE
+    __call_api
+    case "${__code}" in
+      204) echo "The graffiti for the validator with public key ${__pubkey} was set back to default."; (( deleted+=1 ));;
+      400) echo "The pubkey was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; (( failed+=1 ));;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "A graffiti was found for ${__pubkey}, but cannot be deleted. It may be in a configuration file. Message: $(__print_jq_message "${__result}" '.message')";;
+      404) echo "The key ${__pubkey} was not found on the server, nothing to delete. Message: $(__print_jq_message "${__result}" '.message')";;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  __pubkeys_summary "Set the graffiti back to default" "${deleted}" "${failed}"
 }
 
 
-exit-sign() {
-  local pubkeys=()
+# Turn "all", a single pubkey, or a comma-separated list into the pubkeys array
+# This is called as __pubkeys_to_array "<selector>" "<what we are doing>", such as "set the graffiti for"
+__pubkeys_to_array() {
+  local selector=$1
+  local purpose=$2
+  local key
   local keys_to_array
-  local skipped=0
-  local signed=0
   local vc_api_container
   local vc_service
   local vc_api_port
   local vc_api_tls
-  local exitstatus
 
-  if [[ -z "${__pubkey}" ]]; then
-    echo "Please specify a validator public key to sign an exit message for, or \"all\""
+  __pubkeys=()
+  if [[ -z "${selector}" ]]; then
+    echo "Please specify a validator public key to ${purpose}, \"all\", or a comma-separated list"
     exit 0
   fi
-  if [[ ! "${__pubkey}" = "all" ]]; then
-    __check_pubkey "${__pubkey}"
-  fi
-  __api_path=eth/v1/keystores
-  if [[ "${__pubkey}" = "all" ]]; then
+  if [[ "${selector}" = "all" ]]; then
+    __api_path=eth/v1/keystores
     if [[ "${WEB3SIGNER}" = "true" ]]; then
       __token=NIL
       vc_api_container=${__api_container}
@@ -414,43 +521,494 @@ exit-sign() {
       __get_token
     fi
     __validator_list_call
+    if [[ "${WEB3SIGNER}" = "true" ]]; then
+      __api_container=${vc_api_container}
+      __api_port=${vc_api_port}
+      __api_tls=${vc_api_tls}
+      __service=${vc_service}
+    fi
     if [[ "$(echo "${__result}" | jq '.data | length')" -eq 0 ]]; then
-      echo "No keys loaded, cannot sign anything"
-      return
-    else
-      keys_to_array=$(echo "${__result}" | jq -r '.data[].validating_pubkey' | tr '\n' ' ')
+      echo "No keys loaded, nothing to ${purpose}"
+      exit 0
+    fi
+    keys_to_array=$(echo "${__result}" | jq -r '.data[].validating_pubkey' | tr '\n' ' ')
 # Word splitting is desired for the array
 # shellcheck disable=SC2206
-      pubkeys+=( ${keys_to_array} )
-      if [[ "${WEB3SIGNER}" = "true" ]]; then
-        __api_container=${vc_api_container}
-        __api_port=${vc_api_port}
-        __api_tls=${vc_api_tls}
-        __service=${vc_service}
-      fi
-    fi
+    __pubkeys+=( ${keys_to_array} )
   else
-    pubkeys+=( "${__pubkey}" )
+# Strip blanks but not the newlines the comma split just created
+    while IFS= read -r key || [[ -n "${key}" ]]; do
+      [[ -z "${key}" ]] && continue
+      __check_pubkey "${key}"
+      __pubkeys+=( "${key}" )
+    done < <(echo "${selector}" | tr ',' '\n' | tr -d '[:blank:]')
+    if [[ "${#__pubkeys[@]}" -eq 0 ]]; then
+      echo "Please specify a validator public key to ${purpose}, \"all\", or a comma-separated list"
+      exit 0
+    fi
+  fi
+}
+
+
+# Validate a Gwei value as the keymanager API spec defines it
+# This is called as __check_gwei "<value>" "<field name>"
+__check_gwei() {
+  if [[ ! "$1" =~ ^(0|[1-9][0-9]{0,19})$ ]]; then
+    echo "The ${2} needs to be a whole number of Gwei, and \"${1}\" is not"
+    exit 0
+  fi
+}
+
+
+# Convert the ETH value of --min-bid to the Gwei the API expects
+__builder_min_bid_to_gwei() {
+  local min_bid
+
+  min_bid=${__min_bid}
+  if [[ ! "${min_bid}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "The minimum bid needs to be a number in ETH, for example 0.01, and \"${min_bid}\" is not"
+    exit 0
+  fi
+  __min_bid_gwei=$(awk -v v="${min_bid}" 'BEGIN{printf "%.0f", v * 1000000000}')
+  __check_gwei "${__min_bid_gwei}" "minimum bid"
+}
+
+
+# Translate the words we accept for --boost-factor into what the API expects
+__builder_boost_factor_value() {
+  case "${__boost_factor}" in
+    local) __boost_factor_value=0;;
+    maxprofit) __boost_factor_value=100;;
+    always) __boost_factor_value=${__max_boost_factor};;
+    *)
+      if [[ ! "${__boost_factor}" =~ ^(0|[1-9][0-9]{0,19})$ ]]; then
+        echo "The boost factor needs to be \"local\", \"maxprofit\", \"always\", or a whole number."
+        echo "It is a percentage multiplier: below 100 disfavors builders, above 100 favors them."
+        echo "This is the same scale as EPBS_BUILD_FACTOR in .env."
+        exit 0
+      fi
+      __boost_factor_value=${__boost_factor}
+      # Compare as text, bash arithmetic cannot hold uint64. Equal length makes this a numeric comparison
+      # shellcheck disable=SC2071
+      if [[ ${#__boost_factor_value} -eq ${#__max_boost_factor} && "${__boost_factor_value}" > "${__max_boost_factor}" ]]; then
+        echo "The boost factor ${__boost_factor} exceeds the 64-bit maximum, capping it to ${__max_boost_factor}"
+        __boost_factor_value=${__max_boost_factor}
+      fi
+      ;;
+  esac
+}
+
+
+# Build the patch document from the command line arguments
+__builder_patch() {
+  local urls
+
+  urls=${__builder_urls}
+  if [[ -n "${__min_bid}" ]]; then
+    __builder_min_bid_to_gwei
+  fi
+  if [[ -n "${__boost_factor}" ]]; then
+    __builder_boost_factor_value
   fi
 
+  jq -cn --arg urls "${urls}" --arg min_bid "${__min_bid_gwei}" --arg boost "${__boost_factor_value}" '
+    {}
+    | if $urls == "none" then .builders = []
+      elif $urls != "" then .builders = ($urls | split(",")
+                                          | map(sub("^\\s+";"") | sub("\\s+$";""))
+                                          | map(select(length > 0))
+                                          | map({url: .}))
+      else . end
+    | if $min_bid != "" then .min_bid = $min_bid else . end
+    | if $boost != "" then .builder_boost_factor = $boost else . end' >/tmp/builder-patch.json
+}
+
+
+# Catch what the API would reject with a bare 400, so the user gets a useful message
+# This is called as __builder_check_document "<file>"
+__builder_check_document() {
+  local file=$1
+  local count
+  local dupes
+  local empty_auth
+  local bad_auth
+  local long_urls
+  local no_url
+
+  if ! jq -e . "${file}" >/dev/null 2>&1; then
+    echo "The builder configuration is not valid JSON."
+    exit 1
+  fi
+  if [[ "$(jq -r 'type' "${file}")" != "object" ]]; then
+    echo "The builder configuration needs to be a JSON object, see \"ethd keys get-builder 0xPUBKEY --json\"."
+    exit 1
+  fi
+  if [[ "$(jq -r 'has("builders")' "${file}")" != "true" ]]; then
+    return
+  fi
+  if [[ "$(jq -r '.builders | type' "${file}")" != "array" ]]; then
+    echo "The \"builders\" field needs to be a JSON array."
+    exit 1
+  fi
+  count=$(jq -r '.builders | length' "${file}")
+  if [[ "${count}" -gt 64 ]]; then
+    echo "The keymanager API allows at most 64 builders, and this configuration has ${count}."
+    exit 1
+  fi
+  no_url=$(jq -r '[.builders[] | select(has("url") | not)] | length' "${file}")
+  if [[ "${no_url}" -gt 0 ]]; then
+    echo "Every entry in \"builders\" needs a \"url\", and at least one entry does not have one."
+    exit 1
+  fi
+  long_urls=$(jq -r '[.builders[] | select(.url | length > 2048)] | length' "${file}")
+  if [[ "${long_urls}" -gt 0 ]]; then
+    echo "A builder url can be at most 2048 characters long."
+    exit 1
+  fi
+  empty_auth=$(jq -r '[.builders[] | select(has("auth_data") and (.auth_data == "" or .auth_data == "0x"))] | length' "${file}")
+  if [[ "${empty_auth}" -gt 0 ]]; then
+    echo "A builder's \"auth_data\" cannot be empty. Either give it a value, or leave it out"
+    echo "to have it derived from the builder's url."
+    exit 1
+  fi
+  bad_auth=$(jq -r '[.builders[] | select(has("auth_data") and .auth_data != null)
+    | select(.auth_data | (type == "string" and test("\\A0x(?:[a-fA-F0-9]{2}){1,4096}\\z")) | not)] | length' "${file}")
+  if [[ "${bad_auth}" -gt 0 ]]; then
+    echo "A builder's \"auth_data\" needs to be 0x followed by hex-encoded bytes, at most 4096 bytes,"
+    echo "for example \"0x68747470733a2f2f6275696c6465722e6578616d706c652e636f6d\" for https://builder.example.com."
+    exit 1
+  fi
+# No two entries may share both url and auth_data. An omitted auth_data is derived from the url,
+# so two entries with the same url and no auth_data will be rejected by the validator client.
+  dupes=$(jq -r '[.builders[] | [.url, (.auth_data // "")] | @tsv] | group_by(.) | map(select(length > 1)) | length' "${file}")
+  if [[ "${dupes}" -gt 0 ]]; then
+    echo "This configuration has duplicate builders. No two entries can share both their url and"
+    echo "their auth_data, and an entry without auth_data gets one derived from its url."
+    jq -r '.builders[] | [.url, (.auth_data // "")] | @tsv' "${file}" | sort | uniq -d | cut -f1 | sed 's/^/  /'
+    exit 1
+  fi
+}
+
+
+# Tell the user which values are now pinned rather than following the validator client
+# This is called as __builder_report_pinned "<merged file>"
+__builder_report_pinned() {
+  local file=$1
+  local candidates=()
+  local pinned=()
+  local field
+
+# A field the user did not give on the command line, but that is in the document we just stored,
+# is now fixed for this validator. We cannot tell whether it was already fixed before, because
+# the API only ever hands back the resolved configuration.
+  [[ -z "${__builder_urls}" ]] && candidates+=( "builders" )
+  [[ -z "${__min_bid}" ]] && candidates+=( "min_bid" )
+  [[ -z "${__boost_factor}" ]] && candidates+=( "builder_boost_factor" )
+
+  for field in ${candidates[@]+"${candidates[@]}"}; do
+    if [[ "$(jq -r --arg f "${field}" 'has($f)' "${file}")" = "true" ]]; then
+      pinned+=( "${field}" )
+    fi
+  done
+  if [[ "${#pinned[@]}" -eq 0 ]]; then
+    return
+  fi
+
+  echo "These values are now stored for this validator and will no longer follow the"
+  echo "validator client's configuration:"
+  for field in "${pinned[@]}"; do
+    if [[ "${field}" = "builders" ]]; then
+      printf '  %-22s%s\n' "builders" "$(jq -r '[.builders[].url] | join(", ") | if . == "" then "none, p2p bids only" else . end' "${file}")"
+    else
+      printf '  %-22s%s\n' "${field}" "$(jq -r --arg f "${field}" '.[$f]' "${file}")"
+    fi
+  done
+  echo "Run \"ethd keys delete-builder ${__pubkey}\" to follow EPBS_* in .env again."
+}
+
+
+# Parse the arguments for the builder configuration commands. keymanager.sh is otherwise
+# positional, but a nested document needs real options.
+# This is called as __parse_builder_args "<action>" "$@", with "$@" starting at the selector
+__parse_builder_args() {
+  local action=$1
+  shift
+
+  __pubkey_selector=$1
+  __pubkey=$1
+  if [[ -n "$1" ]]; then
+    shift
+  fi
+  if [[ "${action}" = "set-builder" && -n "$1" && "$1" != -* ]]; then
+    __builder_urls=$1
+    shift
+  fi
+  while [[ -n "${1+x}" ]]; do
+    case "$1" in
+      --json)
+        __json_out=1
+        shift
+        ;;
+      --json-body)
+        if [[ -z "${2+x}" ]]; then
+          echo "--from-json needs a file name"
+          exit 1
+        fi
+        __json_body=$2
+        shift 2
+        ;;
+      --from-json)
+        echo "--from-json should have been turned into the file contents by ethd. This is a bug, please report."
+        exit 70
+        ;;
+      --min-bid)
+        if [[ -z "${2+x}" ]]; then
+          echo "--min-bid needs a value in ETH, for example 0.01"
+          exit 1
+        fi
+        __min_bid=$2
+        shift 2
+        ;;
+      --boost-factor)
+        if [[ -z "${2+x}" ]]; then
+          echo "--boost-factor needs a value: \"local\", \"maxprofit\", \"always\", or a number"
+          exit 1
+        fi
+        __boost_factor=$2
+        shift 2
+        ;;
+      --debug|--trace)
+        shift
+        ;;
+      *)
+        echo "Error: Unknown option for ${action}: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+}
+
+
+
+
+builder-get() {
+  local failed=0
+  local shown=0
+
+  __pubkeys_to_array "${__pubkey_selector}" "get the builder configuration for"
+  if [[ "${__json_out}" -eq 1 && "${#__pubkeys[@]}" -gt 1 ]]; then
+    echo "--json needs a single validator public key, as its output is what set-builder --from-json expects"
+    exit 0
+  fi
   __get_token
-  for __pubkey in "${pubkeys[@]}"; do
+  for __pubkey in "${__pubkeys[@]}"; do
+    __api_path="eth/v1/validator/${__pubkey}/builder_config"
+    __api_data=""
+    __http_method=GET
+    __call_api
+    case "${__code}" in
+      200)
+        if [[ "${__json_out}" -eq 1 ]]; then
+          echo "${__result}" | jq '.data'
+        else
+          echo "The builder configuration in effect for the validator with public key ${__pubkey} is:"
+          echo "${__result}" | jq -r '.data |
+            "  minimum bid          \(.min_bid // "not set") Gwei",
+            "  boost factor         \(.builder_boost_factor // "not set")",
+            (if (.builders | length) == 0 then "  builders             none, this validator uses p2p bids only"
+             else "  builders:", (.builders[] |
+               "    \(.url)"
+               + (if .min_bid then "\n      minimum bid           \(.min_bid) Gwei" else "" end)
+               + (if .max_execution_payment then "\n      max execution payment \(.max_execution_payment) Gwei" else "" end)
+               + (if .builder_boost_factor then "\n      boost factor          \(.builder_boost_factor)" else "" end)
+               + (if (.builder_pubkeys // [] | length) > 0 then "\n      builder pubkeys       \(.builder_pubkeys | join(", "))" else "" end))
+             end)'
+          echo
+          (( shown+=1 ))
+        fi
+        ;;
+      400) echo "The pubkey was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; (( failed+=1 ));;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      404|405|501)
+        echo "The ${__service} client did not serve the builder configuration API."
+        echo "Either it does not support it yet, or the validator with public key ${__pubkey} is not known to it."
+        echo "Message: $(__print_jq_message "${__result}" '.message')"
+        exit 0;;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  if [[ "${shown}" -gt 0 ]]; then
+    echo "This is the resolved configuration: values this validator does not set of its own are"
+    echo "shown as the validator client will use them. Storing it back with set-builder --from-json"
+    echo "fixes those values, instead of leaving them to follow EPBS_* in .env."
+  fi
+  __pubkeys_summary "" 0 "${failed}"
+}
+
+
+builder-set() {
+  local updated=0
+
+  if [[ -n "${__json_body}" ]]; then
+    if [[ -n "${__builder_urls}" || -n "${__min_bid}" || -n "${__boost_factor}" ]]; then
+      echo "--from-json replaces the whole builder configuration, so it cannot be combined with"
+      echo "a builder url list, --min-bid, or --boost-factor. Please edit the JSON instead."
+      exit 0
+    fi
+    echo "${__json_body}" >/tmp/builder-patch.json
+    __builder_check_document /tmp/builder-patch.json
+  else
+    if [[ -z "${__builder_urls}" && -z "${__min_bid}" && -z "${__boost_factor}" ]]; then
+      echo "Please specify what to set: a builder url list, \"none\", --min-bid, --boost-factor,"
+      echo "or a whole configuration with --from-json."
+      exit 0
+    fi
+    __builder_patch
+  fi
+
+  __pubkeys_to_array "${__pubkey_selector}" "set the builder configuration for"
+  __get_token
+  for __pubkey in "${__pubkeys[@]}"; do
+    if [[ -n "${__json_body}" ]]; then
+      cp /tmp/builder-patch.json /tmp/apidata.txt
+    else
+# The API replaces the configuration in full, so merge the patch onto what is there now.
+# jq's * merges objects and replaces arrays, which is what we want for the builders list.
+      __api_path="eth/v1/validator/${__pubkey}/builder_config"
+      __api_data=""
+      __http_method=GET
+      __call_api
+      case "${__code}" in
+        200) echo "${__result}" | jq '.data' >/tmp/builder-current.json;;
+        404) echo '{}' >/tmp/builder-current.json;;
+        405|501)
+          echo "The ${__service} client did not serve the builder configuration API."
+          echo "Either it does not support it yet, or the validator with public key ${__pubkey} is not known to it."
+          exit 0;;
+        401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+        403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+        *) echo "Unexpected return code ${__code} while reading the builder configuration for ${__pubkey}. Result: ${__result}"; exit 1;;
+      esac
+      jq -n --slurpfile cur /tmp/builder-current.json --slurpfile patch /tmp/builder-patch.json \
+        '($cur[0] // {}) * $patch[0]' >/tmp/apidata.txt
+      __builder_check_document /tmp/apidata.txt
+    fi
+
+    __api_path="eth/v1/validator/${__pubkey}/builder_config"
+    __api_data=@/tmp/apidata.txt
+    __http_method=POST
+    __call_api
+    case "${__code}" in
+      202)
+        echo "The builder configuration for the validator with public key ${__pubkey} was updated."
+        if [[ -z "${__json_body}" ]]; then
+          __builder_report_pinned /tmp/apidata.txt
+        fi
+        (( updated++ ))
+        ;;
+      400) echo "The configuration was rejected for ${__pubkey}. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      404|405|501)
+        echo "The ${__service} client did not serve the builder configuration API."
+        echo "Either it does not support it yet, or the validator with public key ${__pubkey} is not known to it."
+        echo "Message: $(__print_jq_message "${__result}" '.message')"
+        exit 0;;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  if [[ "${#__pubkeys[@]}" -gt 1 ]]; then
+    echo "Updated the builder configuration for ${updated} of ${#__pubkeys[@]} validators."
+  fi
+  exit 0
+}
+
+
+builder-delete() {
+  local deleted=0
+
+  __pubkeys_to_array "${__pubkey_selector}" "delete the builder configuration for"
+  __get_token
+  for __pubkey in "${__pubkeys[@]}"; do
+    __api_path="eth/v1/validator/${__pubkey}/builder_config"
+    __api_data=""
+    __http_method=DELETE
+    __call_api
+    case "${__code}" in
+      204) echo "The builder configuration for the validator with public key ${__pubkey} was removed, and it follows EPBS_* in .env again."; (( deleted++ ));;
+      400) echo "The pubkey was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "A builder configuration was found, but cannot be deleted. It may be in a configuration file. Message: $(__print_jq_message "${__result}" '.message')";;
+      404|405|501)
+        echo "The ${__service} client did not serve the builder configuration API."
+        echo "Either it does not support it yet, or the validator with public key ${__pubkey} is not known to it."
+        echo "Message: $(__print_jq_message "${__result}" '.message')"
+        exit 0;;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
+    esac
+  done
+  if [[ "${#__pubkeys[@]}" -gt 1 ]]; then
+    echo "Removed the builder configuration for ${deleted} of ${#__pubkeys[@]} validators."
+  fi
+  exit 0
+}
+
+
+exit-sign() {
+  local skipped=0
+  local signed=0
+  local exitstatus
+  local val_status
+
+  __pubkeys_to_array "${__pubkey_selector}" "sign an exit message for"
+
+  __get_token
+  for __pubkey in "${__pubkeys[@]}"; do
+# Ask the beacon node first. Validator clients differ in how they report a key that is not in
+# state - Lodestar answers 500 - so this keeps the skip path the same on every client.
+    __api_path="eth/v1/beacon/states/head/validators/${__pubkey}"
+    __api_data=""
+    __http_method=GET
+    __call_cl_api
+    case "${__code}" in
+      200)
+        val_status=$(echo "${__result}" | jq -r '.data.status')
+        case "${val_status}" in
+          active_exiting|active_slashed|exited_*|withdrawal_*)
+            echo "The key ${__pubkey} is already exiting or has exited, status ${val_status}. No exit message needed."
+            (( skipped+=1 ))
+            continue
+            ;;
+        esac
+        ;;
+      404)
+        echo "The key ${__pubkey} is not on the beacon chain. It has to be active with an index on the beacon chain to be able to sign an exit message."
+        (( skipped+=1 ))
+        continue
+        ;;
+      *) echo "Unexpected return code ${__code} from the consensus client while looking up ${__pubkey}. Result: ${__result}"; exit 1;;
+    esac
+
     __api_data=""
     __http_method=POST
     __api_path="eth/v1/validator/${__pubkey}/voluntary_exit"
     __call_api
     case "${__code}" in
       200) echo "Signed voluntary exit for validator with public key ${__pubkey}"; (( signed+=1 ));;
-      400) echo "The pubkey or limit was formatted wrong. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-      401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-      403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
+      400) echo "The pubkey or limit was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
       404)
         echo "Path not found error. The key ${__pubkey} has to be active with an index on the beacon chain to be able to sign an exit message."
-        echo "Error: $(echo "${__result}" | jq -r '.message')"
+        echo "Error: $(__print_jq_message "${__result}" '.message')"
         (( skipped+=1 ))
         continue
         ;;
-      500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
       *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
     esac
     # This is only reached for 200
@@ -468,7 +1026,7 @@ exit-sign() {
   done
 
   echo "Signed exit messages for ${signed} keys"
-  echo "Skipped ${skipped} keys because they weren't found or were not active on the beacon chain"
+  echo "Skipped ${skipped} keys because they weren't found, were not active, or were already exiting on the beacon chain"
 }
 
 
@@ -496,8 +1054,8 @@ exit-send() {
       __call_cl_api
       case "${__code}" in
         200) echo "Loaded voluntary exit message for validator index ${validator_index}";;
-        400) echo "Unable to load the voluntary exit message. Error: $(echo "${__result}" | jq -r '.message')";;
-        500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')";;
+        400) echo "Unable to load the voluntary exit message. Error: $(__print_jq_message "${__result}" '.message')";;
+        500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')";;
         *) echo "Unexpected return code ${__code}. Result: ${__result}";;
       esac
       echo
@@ -515,9 +1073,9 @@ __validator_list_call() {
   __call_api
   case "${__code}" in
     200) ;;
-    401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-    403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-    500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
+    401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+    403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+    500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
     *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
   esac
 }
@@ -569,6 +1127,9 @@ validator-list() {
 
 
 validator-count() {
+  local nodes
+  local node
+  local node_reachable=0
   local vc_api_container
   local vc_service
   local vc_api_port
@@ -619,9 +1180,22 @@ validator-count() {
     fi
   fi
 
+  nodes=$(echo "${CL_NODE}" | tr ',' ' ')
+  for node in ${nodes}; do
+    if curl -s -m 5 -o /dev/null -w "%{http_code}" "${node}/eth/v1/node/health" | grep -q "^[23]"; then
+      node_reachable=1
+      break
+    fi
+  done
+
+  if [[ "${node_reachable}" -eq 0 ]]; then
+    echo "No consensus client node is reachable via any URL in ${CL_NODE}"
+    exit 1
+  fi
+
   echo "Querying validator state, this may take a minute"
   for __pubkey in $(echo "${vals}" | jq -r '.data[].validating_pubkey'); do
-    val_state=$(curl -k -m 60 -s --show-error "${CL_NODE}/eth/v1/beacon/states/head/validators/${__pubkey}" | jq -r .data.status)
+    val_state=$(curl -k -m 60 -s --show-error "${node}/eth/v1/beacon/states/head/validators/${__pubkey}" | jq -r .data.status)
     case "${val_state}" in
       active_ongoing) ((vals_active++));;
       active_exiting) ((vals_exiting++));;
@@ -657,21 +1231,13 @@ validator-delete() {
   local vc_api_container
   local vc_api_port
   local vc_api_tls
-  local pubkeys=()
-  local keys_to_array
+  local num_keys
   local yn
   local status
   local file
+  local i
 
-  if [[ -z "${__pubkey}" ]]; then
-    echo "Please specify a validator public key to delete, or \"all\""
-    exit 0
-  fi
-  if [[ ! "${__pubkey}" = "all" ]]; then
-    __check_pubkey "${__pubkey}"
-  fi
-  __api_path=eth/v1/keystores
-  if [[ "${__pubkey}" = "all" ]]; then
+  if [[ "${__pubkey_selector}" = "all" ]]; then
     if [[ "${WEB3SIGNER}" = "true" ]]; then
       echo "WARNING - this will delete all currently loaded keys from web3signer and the validator client."
     else
@@ -683,37 +1249,13 @@ validator-delete() {
       [Yy][Ee][Ss]) ;;
       * ) echo "Aborting key deletion"; exit 130;;
     esac
-    if [[ "${WEB3SIGNER}" = "true" ]]; then
-      __token=NIL
-      vc_api_container=${__api_container}
-      __api_container=${__w3s_container}
-      vc_api_port=${__api_port}
-      __api_port=${__w3s_port}
-      vc_api_tls=${__api_tls}
-      __api_tls=false
-    else
-      __get_token
-    fi
-
-    __validator_list_call
-    if [[ "$(echo "${__result}" | jq '.data | length')" -eq 0 ]]; then
-      echo "No keys loaded, cannot delete anything"
-      return
-    else
-      keys_to_array=$(echo "${__result}" | jq -r '.data[].validating_pubkey' | tr '\n' ' ')
-# Word splitting is desired for the array
-# shellcheck disable=SC2206
-      pubkeys+=( ${keys_to_array} )
-      if [[ "${WEB3SIGNER}" = "true" ]]; then
-        __api_container=${vc_api_container}
-        __api_port=${vc_api_port}
-        __api_tls=${vc_api_tls}
-      fi
-    fi
-  else
-    pubkeys+=( "${__pubkey}" )
   fi
-  for __pubkey in "${pubkeys[@]}"; do
+  __pubkeys_to_array "${__pubkey_selector}" "delete"
+  num_keys=${#__pubkeys[@]}
+  i=0
+  for __pubkey in "${__pubkeys[@]}"; do
+    (( i+=1 ))
+    echo "Deleting key ${i} of ${num_keys}"
     # Remove remote registration, with a path not to
     if [[ "${WEB3SIGNER}" = "true" ]]; then
       if [[ -z "${W3S_NOREG+x}" ]]; then
@@ -724,9 +1266,9 @@ validator-delete() {
         __call_api
         case "${__code}" in
           200) ;;
-          401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-          403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-          500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
+          401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+          403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+          500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
           *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
         esac
 
@@ -774,10 +1316,10 @@ to delete it:"
     __call_api
     case "${__code}" in
       200) ;;
-      400) echo "The pubkey was formatted wrong. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-      401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-      403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-      500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
+      400) echo "The pubkey was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
       *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
     esac
 
@@ -846,6 +1388,7 @@ validator-import() {
   local keyfile
   local passfile
   local yn
+  local i
 
   __eth2_val_tools=0
 
@@ -893,6 +1436,8 @@ and secrets directories into .eth/validator_keys instead."
     password="${KEYSTORE_PASSWORD}"
     justone=1
   else
+    echo "You are about to import ${num_files} keys."
+    echo
     echo "WARNING - imported keys are immediately live. If these keys exist elsewhere,"
     echo "you WILL get slashed. If it has been less than 15 minutes since you deleted them elsewhere,"
     echo "you are at risk of getting slashed. Exercise caution"
@@ -934,11 +1479,13 @@ and secrets directories into .eth/validator_keys instead."
     fi
   fi
   reg_errored=0
+  i=0
 # See https://www.shellcheck.net/wiki/SC2044 as for why
 # Using file descriptor 3 so this doesn't conflict with the "different passwords" read
 # Could also use dialog, but would need to make sure it exists
   while IFS= read -r -u 3 keyfile; do
-    [[ -f "${keyfile}" ]] || continue
+    (( i+=1 ))  # Deliberately up here: Users can see skipped files in the sequence, and it always ends at N/N
+    [[ -f "${keyfile}" ]] || { (( skipped+=1 )); continue; }
     keydir=$(dirname "${keyfile}")
     __pubkey=0x$(jq -r '.pubkey' "${keyfile}")
     if [[ "${__pubkey}" = "0xnull" ]]; then
@@ -981,6 +1528,8 @@ and secrets directories into .eth/validator_keys instead."
         echo
       done
     fi
+    found_one=0
+    do_a_protec=0
     for protect_file in "${keydir}"/slashing_protection*.json; do
       [[ -f "${protect_file}" ]] || continue
       if grep -q "${__pubkey}" "${protect_file}"; then
@@ -1024,6 +1573,7 @@ and secrets directories into .eth/validator_keys instead."
       jq --arg keystore_value "${keystore_json}" --arg password_value "${password}" --slurpfile protect_value /tmp/protect.json '. | .keystores += [$keystore_value] | .passwords += [$password_value] | . += {slashing_protection: $protect_value[0]}' <<< '{}' >/tmp/apidata.txt
     fi
 
+    echo "Processing file ${i} of ${num_files} for key import. ${skipped} skipped files so far."
     if [[ "${WEB3SIGNER}" = "true" ]]; then
       __token=NIL
       vc_api_container=${__api_container}
@@ -1042,10 +1592,10 @@ and secrets directories into .eth/validator_keys instead."
     __call_api
     case "${__code}" in
       200) ;;
-      400) echo "The pubkey was formatted wrong. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-      401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-      403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-      500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
+      400) echo "The pubkey was formatted wrong. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
       *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
     esac
     if ! echo "${__result}" | grep -q "data"; then
@@ -1091,9 +1641,9 @@ and secrets directories into .eth/validator_keys instead."
         __call_api
         case "${__code}" in
           200) ;;
-          401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-          403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-          500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
+          401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+          403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+          500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
           *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
         esac
         if ! echo "${__result}" | grep -q "data"; then
@@ -1198,9 +1748,9 @@ validator-register() {
     __call_api
     case "${__code}" in
       200) ;;
-      401) echo "No authorization token found. This is a bug. Error: $(echo "${__result}" | jq -r '.message')"; exit 70;;
-      403) echo "The authorization token is invalid. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
-      500) echo "Internal server error. Error: $(echo "${__result}" | jq -r '.message')"; exit 1;;
+      401) echo "No authorization token found. This is a bug. Error: $(__print_jq_message "${__result}" '.message')"; exit 70;;
+      403) echo "The authorization token is invalid. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
+      500) echo "Internal server error. Error: $(__print_jq_message "${__result}" '.message')"; exit 1;;
       *) echo "Unexpected return code ${__code}. Result: ${__result}"; exit 1;;
     esac
     if ! echo "${__result}" | grep -q "data"; then
@@ -1272,36 +1822,68 @@ usage() {
   echo "  import"
   echo "      Import all keystore*.json in .eth/validator_keys while loading slashing protection data"
   echo "      in slashing_protection*.json files that match the public key(s) of the imported validator(s)"
-  echo "  delete 0xPUBKEY | all"
+  echo "  delete 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY"
   echo "      Deletes the validator with public key 0xPUBKEY from the validator client, and exports its"
   echo "      slashing protection database."
-  echo "      \"all\" deletes all detected validators."
+  echo "      \"all\" deletes all detected validators, after asking to confirm."
   echo "  register"
   echo "      For use with web3signer only: Re-register all keys in web3signer with the validator client"
   echo
-  echo "  get-recipient 0xPUBKEY"
+  echo "  get-recipient 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY"
   echo "      List fee recipient set for the validator with public key 0xPUBKEY"
   echo "      Validators will use FEE_RECIPIENT in .env by default, if not set individually"
-  echo "  set-recipient 0xPUBKEY 0xADDRESS"
+  echo "  set-recipient 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY 0xADDRESS"
   echo "      Set individual fee recipient for the validator with public key 0xPUBKEY"
-  echo "  delete-recipient 0xPUBKEY"
+  echo "  delete-recipient 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY"
   echo "      Delete individual fee recipient for the validator with public key 0xPUBKEY"
   echo
-  echo "  get-gas 0xPUBKEY"
+  echo "  get-gas 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY"
   echo "      List execution gas limit set for the validator with public key 0xPUBKEY"
   echo "      Validators will use the client's default, if not set individually"
-  echo "  set-gas 0xPUBKEY amount"
+  echo "  set-gas 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY amount"
   echo "      Set individual execution gas limit for the validator with public key 0xPUBKEY"
-  echo "  delete-gas 0xPUBKEY"
+  echo "  delete-gas 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY"
   echo "      Delete individual execution gas limit for the validator with public key 0xPUBKEY"
   echo
-  echo "  get-graffiti 0xPUBKEY"
+  echo "  get-graffiti 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY"
   echo "      List graffiti set for the validator with public key 0xPUBKEY"
   echo "      Validators will use GRAFFITI in .env by default, if not set individually"
-  echo "  set-graffiti 0xPUBKEY string"
+  echo "  set-graffiti 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY string"
   echo "      Set individual graffiti for the validator with public key 0xPUBKEY"
-  echo "  delete-graffiti 0xPUBKEY"
+  echo "  delete-graffiti 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY"
   echo "      Delete individual graffiti for the validator with public key 0xPUBKEY"
+  echo
+  echo "  get-builder 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY [--json]"
+  echo "      Show the builder configuration in effect for the validator with public key 0xPUBKEY"
+  echo "      Validators will use EPBS_BUILDER_URLS, EPBS_MIN_BID and EPBS_BUILD_FACTOR in .env"
+  echo "      by default, if not set individually"
+  echo "      This is the resolved configuration: values this validator does not set of its own"
+  echo "      are shown as the validator client will use them"
+  echo "      \"--json\" prints it for a single validator, as the JSON that set-builder --from-json"
+  echo "      expects. Storing it back fixes those values, instead of leaving them to follow .env"
+  echo "  set-builder 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY URL[,URL...] | none [OPTIONS]"
+  echo "      Set the builders for the validator with public key 0xPUBKEY, from a comma-separated"
+  echo "      list of URLs, in the same format as EPBS_BUILDER_URLS in .env"
+  echo "      \"none\" stores a configuration that uses no builders, so the validator uses p2p"
+  echo "      bids only. This is not the same as delete-builder, which follows .env again"
+  echo "      Options, which can also be given on their own to change only that value:"
+  echo "        --min-bid ETH"
+  echo "            Minimum bid to accept, in ETH, for example 0.01. The JSON uses Gwei"
+  echo "        --boost-factor local | maxprofit | always | NUMBER"
+  echo "            How to weigh builder bids against a locally built block."
+  echo "            \"local\" prefers the local block, \"maxprofit\" takes whichever pays more,"
+  echo "            \"always\" prefers the builder. A number is a percentage multiplier, where"
+  echo "            below 100 disfavors builders and above 100 favors them."
+  echo "            This is the same scale as EPBS_BUILD_FACTOR in .env"
+  echo "        --from-json FILE | -"
+  echo "            Set the whole configuration from a JSON file, or \"-\" for standard input."
+  echo "            Use this for builder pubkeys, authentication data, per-builder payment caps"
+  echo "            and per-builder boost factors, which the options above do not cover."
+  echo "            This replaces the configuration in full and cannot be combined with the"
+  echo "            options above. Start from \"get-builder 0xPUBKEY --json\""
+  echo "  delete-builder 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY"
+  echo "      Delete the individual builder configuration, so the validator follows EPBS_BUILDER_URLS,"
+  echo "      EPBS_MIN_BID and EPBS_BUILD_FACTOR in .env again"
   echo
   echo "  get-api-token"
   echo "      Print the token for the keymanager API running on port ${__api_port}."
@@ -1320,13 +1902,15 @@ usage() {
   echo "  send-address-change"
   echo "      Send a change-operations.json with ethdo, setting the withdrawal address"
   echo
-  echo "  sign-exit 0xPUBKEY | all"
+  echo "  sign-exit 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY"
   echo "      Create pre-signed exit message for the validator with public key 0xPUBKEY"
-  echo "      \"all\" signs an exit message for all detected validators"
   echo "  sign-exit from-keystore [--offline]"
   echo "      Create pre-signed exit messages with ethdo, from keystore files in ./.eth/validator_keys"
   echo "  send-exit"
   echo "      Send pre-signed exit messages in ./.eth/exit_messages to the Ethereum chain"
+  echo
+  echo " Where a command takes 0xPUBKEY | all | 0xPUBKEY,0xPUBKEY, \"all\" acts on all detected"
+  echo " validators, and a comma-separated list of public keys on just those"
   echo
   echo " Commands can be appended with \"--debug\" to see debug output"
 }
@@ -1417,7 +2001,7 @@ case "$3" in
     validator-list
     ;;
   delete)
-    __pubkey=$4
+    __pubkey_selector=$4
     validator-delete
     ;;
   import)
@@ -1437,46 +2021,61 @@ case "$3" in
     validator-count
     ;;
   get-recipient)
-    __pubkey=$4
+    __pubkey_selector=$4
     recipient-get
     ;;
   set-recipient)
-    __pubkey=$4
+    __pubkey_selector=$4
     __address=$5
     recipient-set
     ;;
   delete-recipient)
-    __pubkey=$4
+    __pubkey_selector=$4
     recipient-delete
     ;;
   get-gas)
-    __pubkey=$4
+    __pubkey_selector=$4
     gas-get
     ;;
   set-gas)
-    __pubkey=$4
+    __pubkey_selector=$4
     __limit=$5
     gas-set
     ;;
   delete-gas)
-    __pubkey=$4
+    __pubkey_selector=$4
     gas-delete
     ;;
   get-graffiti)
-    __pubkey=$4
+    __pubkey_selector=$4
     graffiti-get
     ;;
   set-graffiti)
-    __pubkey=$4
+    __pubkey_selector=$4
     __graffiti=$5
     graffiti-set
     ;;
   delete-graffiti)
-    __pubkey=$4
+    __pubkey_selector=$4
     graffiti-delete
     ;;
+  get-builder)
+    shift 3
+    __parse_builder_args get-builder "$@"
+    builder-get
+    ;;
+  set-builder)
+    shift 3
+    __parse_builder_args set-builder "$@"
+    builder-set
+    ;;
+  delete-builder)
+    shift 3
+    __parse_builder_args delete-builder "$@"
+    builder-delete
+    ;;
   sign-exit)
-    __pubkey=$4
+    __pubkey_selector=$4
     exit-sign
     ;;
   send-exit)

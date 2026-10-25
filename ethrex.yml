@@ -1,19 +1,21 @@
 x-logging: &logging
   logging:
-    driver: json-file
+    driver: ${LOG_DRIVER}
     options:
-      max-size: 100m
-      max-file: "3"
-      tag: '{{.ImageName}}|{{.Name}}|{{.ImageFullID}}|{{.FullID}}'
+      max-size: ${LOG_MAX_SIZE}
+      max-file: ${LOG_MAX_FILE}
+      tag: ${LOG_TAG}
 
 services:
   execution:
     restart: "unless-stopped"
     build:
       context: ./ethrex
+      additional_contexts:
+        ephemery: ./ephemery
       dockerfile: ${ETHREX_DOCKERFILE}
       args:
-        - BUILD_TARGET=${ETHREX_SRC_BUILD_TARGET:-'$(git describe --tags $(git rev-list --tags --max-count=1))'}
+        - BUILD_TARGET=${ETHREX_SRC_BUILD_TARGET:-$$(git describe --tags $$(git rev-list --tags --max-count=1))}
         - SRC_REPO=${ETHREX_SRC_REPO:-https://github.com/lambdaclass/ethrex}
         - DOCKER_TAG=${ETHREX_DOCKER_TAG:-latest}
         - DOCKER_REPO=${ETHREX_DOCKER_REPO:-ghcr.io/lambdaclass/ethrex}
@@ -27,6 +29,7 @@ services:
       - NODE_TYPE=${EL_NODE_TYPE:-pre-merge-expiry}
       - NETWORK=${NETWORK}
       - IPV6=${IPV6:-false}
+      - HOST_IP=${HOST_IP:-}
     volumes:
       - ethrex-el-data:/var/lib/ethrex
       - /etc/localtime:/etc/localtime:ro
@@ -52,6 +55,8 @@ services:
       - ${EL_P2P_PORT:-30303}
       - ${EL_MAX_PEER_COUNT:+--p2p.target-peers}
       - ${EL_MAX_PEER_COUNT:+${EL_MAX_PEER_COUNT}}
+      - ${MAX_BLOBS:+--builder.max-blobs}
+      - ${MAX_BLOBS:+${MAX_BLOBS}}
       - --http.addr
       - 0.0.0.0
       - --http.port
@@ -80,6 +85,7 @@ services:
       - metrics.port=6060
       - metrics.instance=execution
       - metrics.network=${NETWORK}
+      - logs.collect=true
 
   set-prune-marker:
     profiles: ["tools"]
